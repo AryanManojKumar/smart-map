@@ -1,45 +1,62 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nav AI Assistant</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.auth0.com/js/auth0-spa-js/2.1/auth0-spa-js.production.js"></script>
 </head>
-
 <body>
     <div class="container">
         <!-- Chat Panel -->
         <div class="chat-panel">
             <div class="chat-header">
                 <h2>Nav AI Assistant</h2>
+                <button id="authButton" onclick="handleAuth()" class="auth-button">Login</button>
             </div>
-
+            
             <div class="chat-messages" id="chatMessages">
                 <div class="message agent-message">
                     <div class="message-content">
-                        Hi! I'm your navigation assistant. Where would you like to go?
+                        Hi! I'm your navigation assistant. Please login to start chatting.
                     </div>
                 </div>
             </div>
-
-            <div class="chat-input-container">
-                <input type="text" id="chatInput" placeholder="Ask me for directions or search for places..."
-                    autocomplete="off" />
+            
+            <!-- Locked Chat Input -->
+            <div id="lockedInput" class="chat-input-locked">
+                <div class="lock-overlay">
+                    <div class="lock-icon">🔒</div>
+                    <p>Sign in to unlock chat</p>
+                    <button onclick="handleAuth()" class="unlock-button">Sign In / Sign Up</button>
+                </div>
+            </div>
+            
+            <!-- Unlocked Chat Input -->
+            <div id="unlockedInput" class="chat-input-container" style="display: none;">
+                <input 
+                    type="text" 
+                    id="chatInput" 
+                    placeholder="Ask me for directions or search for places..."
+                    autocomplete="off"
+                />
                 <button id="sendButton">Send</button>
             </div>
         </div>
 
-        <!-- Map Panel -->
+        <!-- Map Panel (Always visible) -->
         <div class="map-panel">
             <div id="map"></div>
+            <div id="locationStatus" class="location-status">
+                📍 Getting your location...
+            </div>
         </div>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="auth.js"></script>
     <script src="app.js"></script>
 </body>
-
 </html>

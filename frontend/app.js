@@ -1,11 +1,73 @@
-// Initialize map
-const map = L.map('map').setView([40.7128, -74.0060], 13); // Default: New York
+// Session ID for this conversation
+let currentSessionId = null;
+let userLocation = null;
+let userLocationMarker = null;
+
+// Initialize map (will be centered on user location)
+const map = L.map('map').setView([40.7128, -74.006], 13); // Default: New York
 
 // Add OpenStreetMap tiles
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors',
     maxZoom: 19
 }).addTo(map);
+
+// Get user's GPS location
+function getUserLocation() {
+    const locationStatus = document.getElementById('locationStatus');
+    
+    if ('geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                userLocation = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude
+                };
+                
+                // Center map on user location
+                map.setView([userLocation.lat, userLocation.lng], 15);
+                
+                // Add user location marker
+                const userIcon = L.divIcon({
+                    className: 'user-location-marker',
+                    html: '<div style="background: #3b82f6; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);"></div>',
+                    iconSize: [16, 16]
+                });
+                
+                userLocationMarker = L.marker([userLocation.lat, userLocation.lng], {icon: userIcon})
+                    .bindPopup('📍 You are here')
+                    .addTo(map);
+                
+                locationStatus.innerHTML = '✓ Location found';
+                locationStatus.style.background = '#10b981';
+                
+                setTimeout(() => {
+                    locationStatus.style.display = 'none';
+                }, 3000);
+            },
+            (error) => {
+                console.error('Geolocation error:', error);
+                locationStatus.innerHTML = '⚠️ Location access denied';
+                locationStatus.style.background = '#ef4444';
+                
+                setTimeout(() => {
+                    locationStatus.style.display = 'none';
+                }, 5000);
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            }
+        );
+    } else {
+        locationStatus.innerHTML = '⚠️ Geolocation not supported';
+        locationStatus.style.background = '#ef4444';
+    }
+}
+
+// Call on page load
+getUserLocation();
 
 // Store map layers
 let routeLayer = null;
@@ -136,16 +198,35 @@ async function sendMessage() {
     addLoadingMessage();
     
     try {
-        // Send to backend API
+        const token = getAccessToken();
+        
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+        
+        console.log('Sending message with token:', token ? 'Token present' : 'No token');
+        
+        // Send to backend API with auth
         const response = await fetch('http://localhost:8000/chat', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
             },
-            body: JSON.stringify({ message })
+            body: JSON.stringify({ 
+                message,
+                session_id: currentSessionId
+            })
         });
         
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
         const data = await response.json();
+        
+        // Store session ID
+        currentSessionId = data.session_id;
         
         removeLoadingMessage();
         
@@ -164,8 +245,13 @@ async function sendMessage() {
         
     } catch (error) {
         removeLoadingMessage();
-        addMessage('Sorry, I encountered an error. Please try again.', false);
-        console.error('Error:', error);
+        console.error('Full error:', error);
+        if (error.message.includes('401') || error.message.includes('Not authenticated')) {
+            addMessage('Authentication failed. Please login again.', false);
+            setTimeout(() => login(), 2000);
+        } else {
+            addMessage(`Sorry, I encountered an error: ${error.message}. Please try again.`, false);
+        }
     }
 }
 

@@ -184,3 +184,161 @@ body {
 .chat-messages::-webkit-scrollbar-thumb:hover {
     background: #555;
 }
+
+
+/* Login Screen */
+.login-screen {
+    display: none; /* Removed - no longer needed */
+}
+
+.login-box {
+    background: white;
+    padding: 48px;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    text-align: center;
+    max-width: 400px;
+}
+
+.login-box h1 {
+    font-size: 32px;
+    margin-bottom: 16px;
+    color: #1f2937;
+}
+
+.login-box p {
+    color: #6b7280;
+    margin-bottom: 32px;
+}
+
+.login-button {
+    width: 100%;
+    padding: 14px 24px;
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.login-button:hover {
+    background: #1d4ed8;
+}
+
+.logout-button {
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.2);
+    color: white;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.logout-button:hover {
+    background: rgba(255,255,255,0.3);
+}
+
+.chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+
+/* Locked Chat Input */
+.chat-input-locked {
+    padding: 20px;
+    background: #f9fafb;
+    border-top: 1px solid #e0e0e0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+}
+
+.lock-overlay {
+    text-align: center;
+}
+
+.lock-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    opacity: 0.5;
+}
+
+.lock-overlay p {
+    color: #6b7280;
+    margin-bottom: 16px;
+    font-size: 14px;
+}
+
+.unlock-button {
+    padding: 12px 32px;
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.unlock-button:hover {
+    background: #1d4ed8;
+}
+
+.auth-button {
+    padding: 8px 20px;
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.auth-button:hover {
+    background: #1d4ed8;
+}
+
+/* Location Status */
+.location-status {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #3b82f6;
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 1000;
+    transition: all 0.3s;
+}
+
+/* User Location Marker Pulse Animation */
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(59, 130, 246, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+    }
+}
+
+.user-location-marker div {
+    animation: pulse 2s infinite;
+}
