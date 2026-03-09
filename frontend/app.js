@@ -215,7 +215,8 @@ async function sendMessage() {
             },
             body: JSON.stringify({ 
                 message,
-                session_id: currentSessionId
+                session_id: currentSessionId,
+                user_location: userLocation  // Send GPS location
             })
         });
         
@@ -243,6 +244,11 @@ async function sendMessage() {
             addPOIMarkers(data.pois);
         }
         
+        // Display location candidates if available
+        if (data.location_candidates && data.location_candidates.length > 0) {
+            displayLocationCandidates(data.location_candidates);
+        }
+        
     } catch (error) {
         removeLoadingMessage();
         console.error('Full error:', error);
@@ -262,3 +268,42 @@ chatInput.addEventListener('keypress', (e) => {
         sendMessage();
     }
 });
+
+// Display location candidates on map
+function displayLocationCandidates(candidates) {
+    // Clear existing markers
+    markersLayer.clearLayers();
+    
+    // Add markers for each candidate
+    candidates.forEach((candidate, index) => {
+        const icon = L.divIcon({
+            className: 'custom-marker',
+            html: `<div style="background: #3b82f6; width: 32px; height: 32px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 16px;">${candidate.id}</div>`,
+            iconSize: [32, 32]
+        });
+        
+        const marker = L.marker([candidate.coordinates.lat, candidate.coordinates.lng], {icon: icon})
+            .bindPopup(`
+                <div style="min-width: 200px;">
+                    <strong>${candidate.name}</strong><br>
+                    <small>${candidate.address}</small><br>
+                    ${candidate.distance_text ? `<small>📏 ${candidate.distance_text}</small>` : ''}
+                </div>
+            `)
+            .addTo(markersLayer);
+        
+        // Open popup for first marker
+        if (index === 0) {
+            marker.openPopup();
+        }
+    });
+    
+    // Fit map to show all candidates
+    if (candidates.length > 0) {
+        const bounds = L.latLngBounds(
+            candidates.map(c => [c.coordinates.lat, c.coordinates.lng])
+        );
+        map.fitBounds(bounds, {padding: [50, 50]});
+    }
+}
+
