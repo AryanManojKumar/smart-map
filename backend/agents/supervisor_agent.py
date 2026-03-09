@@ -131,6 +131,45 @@ def call_claude_api(messages, purpose: str = ""):
 # Utility Functions
 # ──────────────────────────────────────────────
 
+def _extract_pois_from_messages(messages) -> list:
+    """Extract POI data from search agent ToolMessages for map markers."""
+    from langchain_core.messages import ToolMessage
+    pois = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            try:
+                content = msg.content
+                if isinstance(content, str):
+                    data = json.loads(content)
+                else:
+                    data = content
+                
+                # Handle list of POIs directly
+                if isinstance(data, list):
+                    for poi in data:
+                        if isinstance(poi, dict) and "lat" in poi and "lng" in poi:
+                            pois.append({
+                                "name": poi.get("name", "Unnamed"),
+                                "type": poi.get("type", "poi"),
+                                "lat": poi["lat"],
+                                "lng": poi["lng"],
+                                "distance_km": poi.get("distance_km")
+                            })
+                # Handle dict with pois key
+                elif isinstance(data, dict) and "pois" in data:
+                    for poi in data["pois"]:
+                        if isinstance(poi, dict) and "lat" in poi and "lng" in poi:
+                            pois.append({
+                                "name": poi.get("name", "Unnamed"),
+                                "type": poi.get("type", "poi"),
+                                "lat": poi["lat"],
+                                "lng": poi["lng"],
+                                "distance_km": poi.get("distance_km")
+                            })
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+    return pois
+
 def is_coordinates(location: str) -> bool:
     """Check if location string is GPS coordinates (lat,lng)."""
     try:
@@ -380,23 +419,38 @@ def routing_node(state: SupervisorState):
         location_b = f"{loc_b['coordinates']['lat']},{loc_b['coordinates']['lng']}"
         AgentLogger.info(f"Resolved destination → ({location_b})")
     
-    # Compute route
+    # Compute route (with alternatives)
     AgentLogger.tool_call("routing_engine", {"from": location_a, "to": location_b})
     try:
         route_data = routing_engine(location_a, location_b)
+        
+        # Extract alternatives before storing
+        alternatives = route_data.pop("alternative_routes", [])
+        
         AgentLogger.state_update("route_data", route_data)
         
         # Build route context for conversational Q&A
         route_context = build_route_context(route_data)
         AgentLogger.info(f"Built route context ({len(route_context)} chars)")
         
-        response = f"I found a route from {route_data['from']} to {route_data['to']}! It's {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes.\n\n💡 You can now ask me anything about this route — highway details, lane counts, turn-by-turn directions, road surfaces, and more!"
+        # Build response mentioning alternatives
+        response = f"I found a route from {route_data['from']} to {route_data['to']}! It's {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes."
+        
+        if alternatives:
+            response += f"\n\n🗺️ I also found **{len(alternatives)} alternative route(s)** — shown in grey on the map. Click any grey route to switch to it!"
+            for i, alt in enumerate(alternatives):
+                sign = "+" if alt.get("time_diff_minutes", 0) >= 0 else ""
+                response += f"\n  • Route {i+2}: {alt['distance_km']} km ({sign}{alt.get('time_diff_minutes', 0)} min)"
+        
+        response += "\n\n💡 You can ask me anything about this route — highway details, lane counts, turn-by-turn directions, road surfaces, and more!"
+        
         AgentLogger.agent_response(response)
         AgentLogger.node_exit("routing_node", "routing")
         return {
             "messages": [AIMessage(content=response)],
             "route_data": route_data,
             "route_context": route_context,
+            "alternative_routes": alternatives,
             "current_intent": "routing"
         }
     except Exception as e:
@@ -408,7 +462,7 @@ def routing_node(state: SupervisorState):
 
 
 def search_node(state: SupervisorState):
-    """Handle POI search requests."""
+    """Handle POI search requests — extract POI markers for the map."""
     AgentLogger.node_enter("search_node")
     
     user_message = state["messages"][-1].content
@@ -422,11 +476,18 @@ def search_node(state: SupervisorState):
     try:
         result = run_search_agent(user_message, route_data=route_data, location=location)
         agent_response = result["messages"][-1].content
+        
+        # Extract POI data from tool messages for map markers
+        pois = _extract_pois_from_messages(result.get("messages", []))
+        if pois:
+            AgentLogger.info(f"Extracted {len(pois)} POIs for map markers")
+        
         AgentLogger.agent_response(agent_response)
         AgentLogger.node_exit("search_node", "search")
         return {
             "messages": [AIMessage(content=agent_response)],
-            "current_intent": "search"
+            "current_intent": "search",
+            "search_results": pois
         }
     except Exception as e:
         AgentLogger.error(f"Search failed: {str(e)}")
@@ -669,6 +730,10 @@ For "question": Answer their question, then ask which location they'd like."""
                 
                 try:
                     route_data = routing_engine(location_a, location_b)
+                    
+                    # Extract alternatives before storing
+                    alternatives = route_data.pop("alternative_routes", [])
+                    
                     AgentLogger.state_update("route_data", route_data)
                     AgentLogger.state_update("pending_candidates", "cleared")
                     
@@ -676,7 +741,16 @@ For "question": Answer their question, then ask which location they'd like."""
                     route_context = build_route_context(route_data)
                     AgentLogger.info(f"Built route context ({len(route_context)} chars)")
                     
-                    response = f"{answer}\n\nThe route is {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes.\n\n💡 You can now ask me anything about this route — highway details, lane counts, turn-by-turn directions, road surfaces, and more!"
+                    response = f"{answer}\n\nThe route is {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes."
+                    
+                    if alternatives:
+                        response += f"\n\n🗺️ I also found **{len(alternatives)} alternative route(s)** — shown in grey on the map. Click any grey route to switch to it!"
+                        for i, alt in enumerate(alternatives):
+                            sign = "+" if alt.get("time_diff_minutes", 0) >= 0 else ""
+                            response += f"\n  • Route {i+2}: {alt['distance_km']} km ({sign}{alt.get('time_diff_minutes', 0)} min)"
+                    
+                    response += "\n\n💡 You can now ask me anything about this route — highway details, lane counts, turn-by-turn directions, road surfaces, and more!"
+                    
                     AgentLogger.agent_response(response)
                     AgentLogger.node_exit("disambiguation_node", "routing")
                     
@@ -684,6 +758,7 @@ For "question": Answer their question, then ask which location they'd like."""
                         "messages": [AIMessage(content=response)],
                         "route_data": route_data,
                         "route_context": route_context,
+                        "alternative_routes": alternatives,
                         "current_intent": "routing",
                         "pending_candidates": None,
                         "location_candidates": None
@@ -745,11 +820,23 @@ For "question": Answer their question, then ask which location they'd like."""
                         
                         try:
                             route_data = routing_engine(location_a, location_b)
+                            
+                            # Extract alternatives before storing
+                            alternatives = route_data.pop("alternative_routes", [])
+                            
                             response = f"Found it! {chosen['name']} ({chosen['address']}). The route is {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes."
+                            
+                            if alternatives:
+                                response += f"\n\n🗺️ I also found **{len(alternatives)} alternative route(s)** — shown in grey on the map. Click any grey route to switch to it!"
+                                for i, alt in enumerate(alternatives):
+                                    sign = "+" if alt.get("time_diff_minutes", 0) >= 0 else ""
+                                    response += f"\n  • Route {i+2}: {alt['distance_km']} km ({sign}{alt.get('time_diff_minutes', 0)} min)"
+                            
                             AgentLogger.agent_response(response)
                             return {
                                 "messages": [AIMessage(content=response)],
                                 "route_data": route_data,
+                                "alternative_routes": alternatives,
                                 "current_intent": "routing",
                                 "pending_candidates": None,
                                 "location_candidates": None
@@ -888,11 +975,15 @@ def run_supervisor(user_message, session_id, checkpointer=None, location=None, u
         AgentLogger.info(f"Route: {rd.get('distance_km')} km, {rd.get('time_minutes')} min")
     if result.get("location_candidates"):
         AgentLogger.info(f"Candidates: {len(result['location_candidates'])}")
+    if result.get("alternative_routes"):
+        AgentLogger.info(f"Alternative routes: {len(result['alternative_routes'])}")
     AgentLogger.separator()
     
     return {
         "message": result["messages"][-1].content,
         "route_data": result.get("route_data"),
         "intent": result.get("current_intent"),
-        "location_candidates": result.get("location_candidates")
+        "location_candidates": result.get("location_candidates"),
+        "search_results": result.get("search_results"),
+        "alternative_routes": result.get("alternative_routes")
     }

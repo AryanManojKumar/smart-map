@@ -59,6 +59,7 @@ class ChatResponse(BaseModel):
     route_data: Optional[dict] = None
     pois: Optional[list] = None
     location_candidates: Optional[list] = None
+    alternative_routes: Optional[list] = None
 
 
 # ── Endpoints ────────────────────────────────
@@ -96,8 +97,9 @@ async def chat(
             message=result["message"],
             session_id=session_id,
             route_data=result.get("route_data"),
-            pois=None,
-            location_candidates=result.get("location_candidates")
+            pois=result.get("search_results"),
+            location_candidates=result.get("location_candidates"),
+            alternative_routes=result.get("alternative_routes")
         )
     except Exception as e:
         print(f"Error: {e}")

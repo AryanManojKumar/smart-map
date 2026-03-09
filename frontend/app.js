@@ -1,21 +1,53 @@
-// Session ID for this conversation
+// ──────────────────────────────────────────────
+// Nav AI — Interactive Map Application
+// ──────────────────────────────────────────────
+
 let currentSessionId = null;
 let userLocation = null;
 let userLocationMarker = null;
 
-// Initialize map (will be centered on user location)
-const map = L.map('map').setView([40.7128, -74.006], 13); // Default: New York
+// Initialize map
+const map = L.map('map').setView([20.5937, 78.9629], 5); // Default: India center
 
-// Add OpenStreetMap tiles
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors',
     maxZoom: 19
 }).addTo(map);
 
-// Get user's GPS location
+// ── Layer Groups (separate so we can clear independently) ──
+let routeLayer = null;
+let routeMarkersLayer = L.layerGroup().addTo(map);   // Start/end markers
+let altRoutesLayer = L.layerGroup().addTo(map);       // Alternative route lines
+let poiLayer = L.layerGroup().addTo(map);             // POI search results
+let candidateLayer = L.layerGroup().addTo(map);        // Disambiguation pins
+
+// Store current routes for switching
+let currentPrimaryRoute = null;
+let currentAlternatives = [];
+
+// ── POI Type Icons ──
+const POI_ICONS = {
+    hospital: { emoji: '🏥', color: '#ef4444', label: 'Hospital' },
+    fuel: { emoji: '⛽', color: '#f97316', label: 'Gas Station' },
+    gas_station: { emoji: '⛽', color: '#f97316', label: 'Gas Station' },
+    restaurant: { emoji: '🍽️', color: '#8b5cf6', label: 'Restaurant' },
+    cafe: { emoji: '☕', color: '#a16207', label: 'Café' },
+    hotel: { emoji: '🏨', color: '#0ea5e9', label: 'Hotel' },
+    parking: { emoji: '🅿️', color: '#6366f1', label: 'Parking' },
+    atm: { emoji: '🏧', color: '#059669', label: 'ATM' },
+    charging_station: { emoji: '🔌', color: '#22c55e', label: 'EV Charging' },
+    ev_charging: { emoji: '🔌', color: '#22c55e', label: 'EV Charging' },
+    pharmacy: { emoji: '💊', color: '#ec4899', label: 'Pharmacy' },
+    default: { emoji: '📍', color: '#6b7280', label: 'Place' }
+};
+
+function getPoiStyle(type) {
+    return POI_ICONS[type?.toLowerCase()] || POI_ICONS.default;
+}
+
+// ── User Location ──
 function getUserLocation() {
     const locationStatus = document.getElementById('locationStatus');
-
     if ('geolocation' in navigator) {
         navigator.geolocation.getCurrentPosition(
             (position) => {
@@ -23,76 +55,46 @@ function getUserLocation() {
                     lat: position.coords.latitude,
                     lng: position.coords.longitude
                 };
+                map.setView([userLocation.lat, userLocation.lng], 14);
 
-                // Center map on user location
-                map.setView([userLocation.lat, userLocation.lng], 15);
-
-                // Add user location marker
                 const userIcon = L.divIcon({
-                    className: 'user-location-marker',
-                    html: '<div style="background: #3b82f6; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);"></div>',
-                    iconSize: [16, 16]
+                    className: 'user-marker',
+                    html: `<div class="user-marker-dot"><div class="user-marker-pulse"></div></div>`,
+                    iconSize: [20, 20],
+                    iconAnchor: [10, 10]
                 });
-
-                userLocationMarker = L.marker([userLocation.lat, userLocation.lng], { icon: userIcon })
-                    .bindPopup('📍 You are here')
+                userLocationMarker = L.marker([userLocation.lat, userLocation.lng], { icon: userIcon, zIndexOffset: 1000 })
+                    .bindPopup('<b>📍 You are here</b>')
                     .addTo(map);
 
                 locationStatus.innerHTML = '✓ Location found';
                 locationStatus.style.background = '#10b981';
-
-                setTimeout(() => {
-                    locationStatus.style.display = 'none';
-                }, 3000);
+                setTimeout(() => { locationStatus.style.display = 'none'; }, 3000);
             },
             (error) => {
                 console.error('Geolocation error:', error);
                 locationStatus.innerHTML = '⚠️ Location access denied';
                 locationStatus.style.background = '#ef4444';
-
-                setTimeout(() => {
-                    locationStatus.style.display = 'none';
-                }, 5000);
+                setTimeout(() => { locationStatus.style.display = 'none'; }, 5000);
             },
-            {
-                enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 0
-            }
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
         );
-    } else {
-        locationStatus.innerHTML = '⚠️ Geolocation not supported';
-        locationStatus.style.background = '#ef4444';
     }
 }
-
-// Call on page load
 getUserLocation();
 
-// Store map layers
-let routeLayer = null;
-let markersLayer = L.layerGroup().addTo(map);
-
-// Chat elements
+// ── Chat Elements ──
 const chatMessages = document.getElementById('chatMessages');
 const chatInput = document.getElementById('chatInput');
 const sendButton = document.getElementById('sendButton');
 
-// Sign code to icon/label mapping
+// Sign icons for turn-by-turn
 const SIGN_ICONS = {
     '-98': '↩️', '-8': '↰', '-7': '↖️', '-6': '🔄', '-3': '⬅️', '-2': '⬅️', '-1': '↙️',
     '0': '⬆️', '1': '↗️', '2': '➡️', '3': '➡️', '4': '🏁', '5': '📍', '6': '🔄', '7': '↗️', '8': '↪️'
 };
-
-function getSignIcon(sign) {
-    return SIGN_ICONS[String(sign)] || '▶️';
-}
-
-function formatDistance(meters) {
-    if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
-    return `${Math.round(meters)} m`;
-}
-
+function getSignIcon(sign) { return SIGN_ICONS[String(sign)] || '▶️'; }
+function formatDistance(meters) { return meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${Math.round(meters)} m`; }
 function formatDuration(ms) {
     const minutes = ms / 60000;
     if (minutes < 60) return `${Math.round(minutes)} min`;
@@ -101,7 +103,7 @@ function formatDuration(ms) {
     return mins > 0 ? `${hours}h ${mins}min` : `${hours}h`;
 }
 
-// Add message to chat
+// ── Add Message to Chat ──
 function addMessage(content, isUser = false, routeData = null) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
@@ -109,22 +111,20 @@ function addMessage(content, isUser = false, routeData = null) {
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     contentDiv.textContent = content;
-
     messageDiv.appendChild(contentDiv);
 
-    // Add route info if available
     if (routeData) {
         const routeInfo = document.createElement('div');
         routeInfo.className = 'route-info';
         routeInfo.innerHTML = `
             <strong>Distance:</strong> ${routeData.distance_km} km<br>
-            <strong>Duration:</strong> ${routeData.time_minutes} minutes<br>
+            <strong>Duration:</strong> ${Math.round(routeData.time_minutes)} min<br>
             <strong>From:</strong> ${routeData.from}<br>
             <strong>To:</strong> ${routeData.to}
         `;
         messageDiv.appendChild(routeInfo);
 
-        // Add turn-by-turn directions panel if detailed instructions available
+        // Turn-by-turn directions
         if (routeData.detailed_instructions && routeData.detailed_instructions.length > 0) {
             const directionsPanel = document.createElement('div');
             directionsPanel.className = 'directions-panel';
@@ -135,13 +135,8 @@ function addMessage(content, isUser = false, routeData = null) {
             toggleBtn.onclick = () => {
                 const list = directionsPanel.querySelector('.directions-list');
                 const arrow = toggleBtn.querySelector('.toggle-arrow');
-                if (list.style.display === 'none') {
-                    list.style.display = 'block';
-                    arrow.textContent = '▲';
-                } else {
-                    list.style.display = 'none';
-                    arrow.textContent = '▼';
-                }
+                list.style.display = list.style.display === 'none' ? 'block' : 'none';
+                arrow.textContent = list.style.display === 'none' ? '▼' : '▲';
             };
             directionsPanel.appendChild(toggleBtn);
 
@@ -150,28 +145,22 @@ function addMessage(content, isUser = false, routeData = null) {
             directionsList.style.display = 'none';
 
             routeData.detailed_instructions.forEach((step, index) => {
-                if (step.sign === 4 || step.sign === 5) {
-                    // Finish / via point
-                    const stepDiv = document.createElement('div');
-                    stepDiv.className = 'direction-step direction-step-finish';
-                    stepDiv.innerHTML = `
-                        <span class="step-icon">${getSignIcon(step.sign)}</span>
-                        <span class="step-text">${step.text}</span>
-                    `;
-                    directionsList.appendChild(stepDiv);
-                    return;
-                }
                 const stepDiv = document.createElement('div');
-                stepDiv.className = 'direction-step';
-                stepDiv.innerHTML = `
-                    <span class="step-number">${index + 1}</span>
-                    <span class="step-icon">${getSignIcon(step.sign)}</span>
-                    <div class="step-details">
-                        <span class="step-text">${step.text}</span>
-                        ${step.street_name ? `<span class="step-road">${step.street_name}</span>` : ''}
-                        <span class="step-meta">${formatDistance(step.distance_m)} · ${formatDuration(step.time_ms)}</span>
-                    </div>
-                `;
+                if (step.sign === 4 || step.sign === 5) {
+                    stepDiv.className = 'direction-step direction-step-finish';
+                    stepDiv.innerHTML = `<span class="step-icon">${getSignIcon(step.sign)}</span><span class="step-text">${step.text}</span>`;
+                } else {
+                    stepDiv.className = 'direction-step';
+                    stepDiv.innerHTML = `
+                        <span class="step-number">${index + 1}</span>
+                        <span class="step-icon">${getSignIcon(step.sign)}</span>
+                        <div class="step-details">
+                            <span class="step-text">${step.text}</span>
+                            ${step.street_name ? `<span class="step-road">${step.street_name}</span>` : ''}
+                            <span class="step-meta">${formatDistance(step.distance_m)} · ${formatDuration(step.time_ms)}</span>
+                        </div>
+                    `;
+                }
                 directionsList.appendChild(stepDiv);
             });
 
@@ -184,16 +173,13 @@ function addMessage(content, isUser = false, routeData = null) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-// Add loading indicator
 function addLoadingMessage() {
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message agent-message';
     messageDiv.id = 'loading-message';
-
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     contentDiv.innerHTML = 'Thinking<span class="loading"></span>';
-
     messageDiv.appendChild(contentDiv);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -201,90 +187,196 @@ function addLoadingMessage() {
 
 function removeLoadingMessage() {
     const loadingMsg = document.getElementById('loading-message');
-    if (loadingMsg) {
-        loadingMsg.remove();
-    }
+    if (loadingMsg) loadingMsg.remove();
 }
 
-// Draw route on map
-function drawRoute(routeData) {
-    // Clear existing route
-    if (routeLayer) {
-        map.removeLayer(routeLayer);
-    }
-    markersLayer.clearLayers();
 
-    // Draw polyline
+// ──────────────────────────────────────────────
+// MAP RENDERING
+// ──────────────────────────────────────────────
+
+// Draw route with gradient polyline and labeled markers
+function drawRoute(routeData) {
+    // Clear route layers only (preserve POIs)
+    if (routeLayer) map.removeLayer(routeLayer);
+    routeMarkersLayer.clearLayers();
+    altRoutesLayer.clearLayers();
+    currentPrimaryRoute = routeData;
+
     const polyline = routeData.polyline;
+    if (!polyline || polyline.length === 0) return;
+
+    // Main route polyline with shadow
+    const shadowLine = L.polyline(polyline, {
+        color: '#1e3a5f',
+        weight: 8,
+        opacity: 0.3,
+        lineCap: 'round',
+        lineJoin: 'round'
+    }).addTo(routeMarkersLayer);
+
     routeLayer = L.polyline(polyline, {
-        color: '#2563eb',
+        color: '#3b82f6',
         weight: 5,
-        opacity: 0.7
+        opacity: 0.85,
+        lineCap: 'round',
+        lineJoin: 'round'
     }).addTo(map);
 
-    // Add start marker
+    // Start marker (green)
     const startIcon = L.divIcon({
-        className: 'custom-marker',
-        html: '<div style="background: #10b981; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
-        iconSize: [24, 24]
+        className: 'route-marker',
+        html: `<div class="route-marker-pin route-start">
+                 <span class="route-marker-icon">🟢</span>
+               </div>
+               <div class="route-marker-label">Start</div>`,
+        iconSize: [40, 50],
+        iconAnchor: [20, 50],
+        popupAnchor: [0, -50]
     });
-
     L.marker([routeData.start_point.lat, routeData.start_point.lng], { icon: startIcon })
-        .bindPopup(`<b>Start:</b> ${routeData.from}`)
-        .addTo(markersLayer);
+        .bindPopup(`<b>📍 Start</b><br>${routeData.from}`)
+        .addTo(routeMarkersLayer);
 
-    // Add end marker
+    // End marker (red)
     const endIcon = L.divIcon({
-        className: 'custom-marker',
-        html: '<div style="background: #ef4444; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
-        iconSize: [24, 24]
+        className: 'route-marker',
+        html: `<div class="route-marker-pin route-end">
+                 <span class="route-marker-icon">🔴</span>
+               </div>
+               <div class="route-marker-label">End</div>`,
+        iconSize: [40, 50],
+        iconAnchor: [20, 50],
+        popupAnchor: [0, -50]
     });
-
     L.marker([routeData.end_point.lat, routeData.end_point.lng], { icon: endIcon })
-        .bindPopup(`<b>Destination:</b> ${routeData.to}`)
-        .addTo(markersLayer);
+        .bindPopup(`<b>🏁 Destination</b><br>${routeData.to}`)
+        .addTo(routeMarkersLayer);
 
     // Fit map to route
-    map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+    map.fitBounds(routeLayer.getBounds(), { padding: [60, 60] });
 }
 
-// Add POI markers
+
+// Add POI markers with type-specific styling
 function addPOIMarkers(pois) {
-    pois.forEach(poi => {
-        const poiIcon = L.divIcon({
-            className: 'custom-marker',
-            html: '<div style="background: #f59e0b; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
-            iconSize: [20, 20]
+    poiLayer.clearLayers();
+
+    if (!pois || pois.length === 0) return;
+
+    const bounds = [];
+
+    pois.forEach((poi, index) => {
+        const style = getPoiStyle(poi.type);
+        const distText = poi.distance_km ? ` (${poi.distance_km} km)` : '';
+
+        const icon = L.divIcon({
+            className: 'poi-marker',
+            html: `<div class="poi-marker-pin" style="background: ${style.color};">
+                     <span class="poi-marker-emoji">${style.emoji}</span>
+                   </div>
+                   <div class="poi-marker-number" style="background: ${style.color};">${index + 1}</div>`,
+            iconSize: [36, 44],
+            iconAnchor: [18, 44],
+            popupAnchor: [0, -44]
         });
 
-        L.marker([poi.lat, poi.lng], { icon: poiIcon })
-            .bindPopup(`<b>${poi.name}</b><br>${poi.type}`)
-            .addTo(markersLayer);
+        const marker = L.marker([poi.lat, poi.lng], { icon: icon })
+            .bindPopup(`
+                <div class="poi-popup">
+                    <div class="poi-popup-header" style="background: ${style.color};">
+                        <span>${style.emoji}</span> ${style.label}
+                    </div>
+                    <div class="poi-popup-body">
+                        <b>${poi.name}</b>${distText}
+                    </div>
+                </div>
+            `)
+            .addTo(poiLayer);
+
+        bounds.push([poi.lat, poi.lng]);
     });
+
+    // Include user location in bounds if available
+    if (userLocation) {
+        bounds.push([userLocation.lat, userLocation.lng]);
+    }
+
+    // Fit to show all POIs
+    if (bounds.length > 0) {
+        map.fitBounds(L.latLngBounds(bounds), { padding: [50, 50], maxZoom: 14 });
+    }
 }
 
-// Send message to backend
+
+// Display disambiguation candidates as numbered map pins
+function displayLocationCandidates(candidates) {
+    candidateLayer.clearLayers();
+
+    const bounds = [];
+
+    candidates.forEach((candidate) => {
+        const icon = L.divIcon({
+            className: 'candidate-marker',
+            html: `<div class="candidate-marker-pin">
+                     <span class="candidate-marker-number">${candidate.id}</span>
+                   </div>`,
+            iconSize: [36, 44],
+            iconAnchor: [18, 44],
+            popupAnchor: [0, -44]
+        });
+
+        const distText = candidate.distance_text ? `<br>📏 ${candidate.distance_text}` : '';
+
+        const marker = L.marker([candidate.coordinates.lat, candidate.coordinates.lng], { icon: icon })
+            .bindPopup(`
+                <div class="candidate-popup">
+                    <b>${candidate.id}. ${candidate.name}</b><br>
+                    <small>📍 ${candidate.address}</small>
+                    ${distText}
+                    <br><button class="candidate-select-btn" onclick="selectCandidate(${candidate.id}, '${candidate.name.replace(/'/g, "\\'")}')">
+                        ✅ Select this location
+                    </button>
+                </div>
+            `)
+            .addTo(candidateLayer);
+
+        bounds.push([candidate.coordinates.lat, candidate.coordinates.lng]);
+    });
+
+    // Include user location in bounds
+    if (userLocation) {
+        bounds.push([userLocation.lat, userLocation.lng]);
+    }
+
+    if (bounds.length > 0) {
+        map.fitBounds(L.latLngBounds(bounds), { padding: [50, 50], maxZoom: 12 });
+    }
+}
+
+// Click-to-select a disambiguation candidate
+function selectCandidate(id, name) {
+    chatInput.value = `${id}`;
+    sendMessage();
+}
+
+
+// ──────────────────────────────────────────────
+// SEND MESSAGE
+// ──────────────────────────────────────────────
+
 async function sendMessage() {
     const message = chatInput.value.trim();
     if (!message) return;
 
-    // Add user message
     addMessage(message, true);
     chatInput.value = '';
-
-    // Add loading indicator
     addLoadingMessage();
 
     try {
         const token = getAccessToken();
+        if (!token) throw new Error('Not authenticated');
 
-        if (!token) {
-            throw new Error('Not authenticated');
-        }
-
-        console.log('Sending message with token:', token ? 'Token present' : 'No token');
-
-        // Send to backend API with auth
         const response = await fetch('http://localhost:8000/chat', {
             method: 'POST',
             headers: {
@@ -294,19 +386,14 @@ async function sendMessage() {
             body: JSON.stringify({
                 message,
                 session_id: currentSessionId,
-                user_location: userLocation  // Send GPS location
+                user_location: userLocation
             })
         });
 
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const data = await response.json();
-
-        // Store session ID
         currentSessionId = data.session_id;
-
         removeLoadingMessage();
 
         // Add agent response
@@ -314,22 +401,28 @@ async function sendMessage() {
 
         // Draw route if available
         if (data.route_data && data.route_data.polyline) {
+            candidateLayer.clearLayers();
             drawRoute(data.route_data);
+
+            // Draw alternative routes
+            if (data.alternative_routes && data.alternative_routes.length > 0) {
+                drawAlternativeRoutes(data.alternative_routes);
+            }
         }
 
-        // Add POI markers if available
+        // Show POI markers
         if (data.pois && data.pois.length > 0) {
             addPOIMarkers(data.pois);
         }
 
-        // Display location candidates if available
+        // Show disambiguation candidates
         if (data.location_candidates && data.location_candidates.length > 0) {
             displayLocationCandidates(data.location_candidates);
         }
 
     } catch (error) {
         removeLoadingMessage();
-        console.error('Full error:', error);
+        console.error('Error:', error);
         if (error.message.includes('401') || error.message.includes('Not authenticated')) {
             addMessage('Authentication failed. Please login again.', false);
             setTimeout(() => login(), 2000);
@@ -342,46 +435,80 @@ async function sendMessage() {
 // Event listeners
 sendButton.addEventListener('click', sendMessage);
 chatInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        sendMessage();
-    }
+    if (e.key === 'Enter') sendMessage();
 });
 
-// Display location candidates on map
-function displayLocationCandidates(candidates) {
-    // Clear existing markers
-    markersLayer.clearLayers();
 
-    // Add markers for each candidate
-    candidates.forEach((candidate, index) => {
-        const icon = L.divIcon({
-            className: 'custom-marker',
-            html: `<div style="background: #3b82f6; width: 32px; height: 32px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 16px;">${candidate.id}</div>`,
-            iconSize: [32, 32]
+// ──────────────────────────────────────────────
+// ALTERNATIVE ROUTES
+// ──────────────────────────────────────────────
+
+function drawAlternativeRoutes(alternatives) {
+    altRoutesLayer.clearLayers();
+    currentAlternatives = alternatives;
+
+    alternatives.forEach((alt, index) => {
+        if (!alt.polyline || alt.polyline.length === 0) return;
+
+        const timeDiff = alt.time_diff_minutes || 0;
+        const sign = timeDiff >= 0 ? '+' : '';
+        const label = `Route ${index + 2}: ${alt.distance_km} km (${sign}${timeDiff} min)`;
+
+        // Grey dashed polyline for alternative
+        const altLine = L.polyline(alt.polyline, {
+            color: '#94a3b8',
+            weight: 5,
+            opacity: 0.5,
+            dashArray: '10, 8',
+            lineCap: 'round',
+            lineJoin: 'round'
+        }).addTo(altRoutesLayer);
+
+        // Tooltip showing route info
+        altLine.bindTooltip(label, {
+            sticky: true,
+            className: 'alt-route-tooltip'
         });
 
-        const marker = L.marker([candidate.coordinates.lat, candidate.coordinates.lng], { icon: icon })
-            .bindPopup(`
-                <div style="min-width: 200px;">
-                    <strong>${candidate.name}</strong><br>
-                    <small>${candidate.address}</small><br>
-                    ${candidate.distance_text ? `<small>📏 ${candidate.distance_text}</small>` : ''}
-                </div>
-            `)
-            .addTo(markersLayer);
+        // Hover effect
+        altLine.on('mouseover', function () {
+            this.setStyle({ opacity: 0.85, weight: 6, color: '#64748b' });
+        });
+        altLine.on('mouseout', function () {
+            this.setStyle({ opacity: 0.5, weight: 5, color: '#94a3b8' });
+        });
 
-        // Open popup for first marker
-        if (index === 0) {
-            marker.openPopup();
-        }
+        // Click to switch: make this the primary route
+        altLine.on('click', function () {
+            switchToAlternativeRoute(index);
+        });
     });
-
-    // Fit map to show all candidates
-    if (candidates.length > 0) {
-        const bounds = L.latLngBounds(
-            candidates.map(c => [c.coordinates.lat, c.coordinates.lng])
-        );
-        map.fitBounds(bounds, { padding: [50, 50] });
-    }
 }
 
+function switchToAlternativeRoute(altIndex) {
+    if (!currentPrimaryRoute || !currentAlternatives[altIndex]) return;
+
+    // Swap: old primary becomes an alternative, clicked alternative becomes primary
+    const oldPrimary = currentPrimaryRoute;
+    const newPrimary = currentAlternatives[altIndex];
+
+    // Rebuild alternatives list: remove the one we selected, add old primary
+    const newAlternatives = currentAlternatives.filter((_, i) => i !== altIndex);
+
+    // Calculate time diff for old primary relative to new primary
+    const oldPrimaryAsAlt = { ...oldPrimary };
+    oldPrimaryAsAlt.time_diff_minutes = Math.round((oldPrimary.time_minutes - newPrimary.time_minutes) * 10) / 10;
+    oldPrimaryAsAlt.route_label = 'Previous route';
+    newAlternatives.push(oldPrimaryAsAlt);
+
+    // Redraw
+    drawRoute(newPrimary);
+    drawAlternativeRoutes(newAlternatives);
+
+    // Update chat with route info
+    addMessage(
+        `Switched to Route ${altIndex + 2}: ${newPrimary.distance_km} km, ~${Math.round(newPrimary.time_minutes)} min.`,
+        false,
+        newPrimary
+    );
+}

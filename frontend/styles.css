@@ -15,7 +15,7 @@ body {
     height: 100vh;
 }
 
-/* Chat Panel */
+/* ── Chat Panel ── */
 .chat-panel {
     width: 40%;
     display: flex;
@@ -28,6 +28,9 @@ body {
     padding: 20px;
     background: #2563eb;
     color: white;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
 .chat-header h2 {
@@ -54,6 +57,7 @@ body {
         opacity: 0;
         transform: translateY(10px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -72,6 +76,8 @@ body {
     padding: 12px 16px;
     border-radius: 12px;
     word-wrap: break-word;
+    line-height: 1.5;
+    white-space: pre-wrap;
 }
 
 .user-message .message-content {
@@ -139,7 +145,7 @@ body {
     background: #1e40af;
 }
 
-/* Map Panel */
+/* ── Map Panel ── */
 .map-panel {
     width: 60%;
     position: relative;
@@ -150,7 +156,7 @@ body {
     height: 100%;
 }
 
-/* Loading indicator */
+/* ── Loading ── */
 .loading {
     display: inline-block;
     width: 12px;
@@ -163,11 +169,16 @@ body {
 }
 
 @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
 }
 
-/* Scrollbar styling */
+/* ── Scrollbar ── */
 .chat-messages::-webkit-scrollbar {
     width: 6px;
 }
@@ -186,16 +197,227 @@ body {
 }
 
 
-/* Login Screen */
+/* ══════════════════════════════════
+   MAP MARKERS
+   ══════════════════════════════════ */
+
+/* ── User Location Marker ── */
+.user-marker {
+    position: relative;
+}
+
+.user-marker-dot {
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    border: 3px solid white;
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.5);
+    position: relative;
+}
+
+.user-marker-pulse {
+    position: absolute;
+    top: -6px;
+    left: -6px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: rgba(59, 130, 246, 0.3);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(0.8);
+        opacity: 1;
+    }
+
+    100% {
+        transform: scale(2);
+        opacity: 0;
+    }
+}
+
+/* ── Route Markers (Start/End) ── */
+.route-marker {
+    text-align: center;
+}
+
+.route-marker-pin {
+    width: 36px;
+    height: 36px;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25);
+    margin: 0 auto;
+}
+
+.route-marker-pin.route-start {
+    background: linear-gradient(135deg, #10b981, #059669);
+}
+
+.route-marker-pin.route-end {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+}
+
+.route-marker-icon {
+    transform: rotate(45deg);
+    font-size: 16px;
+    line-height: 1;
+}
+
+.route-marker-label {
+    margin-top: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #1e293b;
+    text-shadow: 0 0 3px white, 0 0 3px white, 0 0 3px white;
+    text-align: center;
+}
+
+
+/* ── POI Markers ── */
+.poi-marker {
+    position: relative;
+    text-align: center;
+}
+
+.poi-marker-pin {
+    width: 32px;
+    height: 32px;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    margin: 0 auto;
+    transition: transform 0.2s;
+}
+
+.poi-marker:hover .poi-marker-pin {
+    transform: rotate(-45deg) scale(1.15);
+}
+
+.poi-marker-emoji {
+    transform: rotate(45deg);
+    font-size: 14px;
+    line-height: 1;
+}
+
+.poi-marker-number {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+
+/* ── Disambiguation Candidate Markers ── */
+.candidate-marker {
+    text-align: center;
+}
+
+.candidate-marker-pin {
+    width: 38px;
+    height: 38px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 3px 12px rgba(37, 99, 235, 0.4);
+    margin: 0 auto;
+    transition: transform 0.2s, box-shadow 0.2s;
+    cursor: pointer;
+}
+
+.candidate-marker:hover .candidate-marker-pin {
+    transform: rotate(-45deg) scale(1.15);
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.6);
+}
+
+.candidate-marker-number {
+    transform: rotate(45deg);
+    color: white;
+    font-size: 16px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+
+/* ── Popup Styles ── */
+.poi-popup {
+    min-width: 180px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.poi-popup-header {
+    padding: 6px 10px;
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.poi-popup-body {
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #1f2937;
+}
+
+.candidate-popup {
+    min-width: 200px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.candidate-select-btn {
+    margin-top: 8px;
+    padding: 6px 14px;
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    width: 100%;
+}
+
+.candidate-select-btn:hover {
+    background: #1d4ed8;
+}
+
+
+/* ══════════════════════════════════
+   AUTH & LOGIN
+   ══════════════════════════════════ */
+
 .login-screen {
-    display: none; /* Removed - no longer needed */
+    display: none;
 }
 
 .login-box {
     background: white;
     padding: 48px;
     border-radius: 16px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     text-align: center;
     max-width: 400px;
 }
@@ -230,9 +452,9 @@ body {
 
 .logout-button {
     padding: 8px 16px;
-    background: rgba(255,255,255,0.2);
+    background: rgba(255, 255, 255, 0.2);
     color: white;
-    border: 1px solid rgba(255,255,255,0.3);
+    border: 1px solid rgba(255, 255, 255, 0.3);
     border-radius: 6px;
     font-size: 14px;
     cursor: pointer;
@@ -240,17 +462,9 @@ body {
 }
 
 .logout-button:hover {
-    background: rgba(255,255,255,0.3);
+    background: rgba(255, 255, 255, 0.3);
 }
 
-.chat-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-
-/* Locked Chat Input */
 .chat-input-locked {
     padding: 20px;
     background: #f9fafb;
@@ -309,7 +523,8 @@ body {
     background: #1d4ed8;
 }
 
-/* Location Status */
+
+/* ── Location Status ── */
 .location-status {
     position: absolute;
     top: 20px;
@@ -321,29 +536,16 @@ body {
     border-radius: 8px;
     font-size: 14px;
     font-weight: 500;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     z-index: 1000;
     transition: all 0.3s;
 }
 
-/* User Location Marker Pulse Animation */
-@keyframes pulse {
-    0% {
-        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
-    }
-    70% {
-        box-shadow: 0 0 0 10px rgba(59, 130, 246, 0);
-    }
-    100% {
-        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
-    }
-}
 
-.user-location-marker div {
-    animation: pulse 2s infinite;
-}
+/* ══════════════════════════════════
+   TURN-BY-TURN DIRECTIONS
+   ══════════════════════════════════ */
 
-/* ── Turn-by-Turn Directions Panel ── */
 .directions-panel {
     margin-top: 10px;
     border-radius: 10px;
@@ -470,4 +672,37 @@ body {
 .direction-step-finish .step-text {
     font-weight: 600;
     color: #166534;
+}
+
+
+/* ── Leaflet Popup Override ── */
+.leaflet-popup-content-wrapper {
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.leaflet-popup-content {
+    margin: 0;
+    min-width: 150px;
+}
+
+.leaflet-popup-tip {
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+
+/* ── Alternative Route Tooltip ── */
+.alt-route-tooltip {
+    background: #1e293b !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 6px 12px !important;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+}
+
+.alt-route-tooltip::before {
+    border-top-color: #1e293b !important;
 }

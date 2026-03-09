@@ -43,6 +43,12 @@ class SupervisorState(TypedDict):
     # Intra-graph node communication (transient, used within a single invocation)
     _routing_params: Optional[Dict[str, str]]  # {location_a, location_b} from router → routing_node
     _search_params: Optional[Dict[str, str]]   # {poi_type} from router → search_node
+    
+    # POI search results to return to frontend for map markers
+    search_results: Optional[List[Dict[str, Any]]]
+    
+    # Alternative routes from GraphHopper
+    alternative_routes: Optional[List[Dict[str, Any]]]
 
 
 class SearchAgentState(TypedDict):
