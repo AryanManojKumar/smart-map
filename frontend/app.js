@@ -15,7 +15,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 // Get user's GPS location
 function getUserLocation() {
     const locationStatus = document.getElementById('locationStatus');
-    
+
     if ('geolocation' in navigator) {
         navigator.geolocation.getCurrentPosition(
             (position) => {
@@ -23,24 +23,24 @@ function getUserLocation() {
                     lat: position.coords.latitude,
                     lng: position.coords.longitude
                 };
-                
+
                 // Center map on user location
                 map.setView([userLocation.lat, userLocation.lng], 15);
-                
+
                 // Add user location marker
                 const userIcon = L.divIcon({
                     className: 'user-location-marker',
                     html: '<div style="background: #3b82f6; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);"></div>',
                     iconSize: [16, 16]
                 });
-                
-                userLocationMarker = L.marker([userLocation.lat, userLocation.lng], {icon: userIcon})
+
+                userLocationMarker = L.marker([userLocation.lat, userLocation.lng], { icon: userIcon })
                     .bindPopup('📍 You are here')
                     .addTo(map);
-                
+
                 locationStatus.innerHTML = '✓ Location found';
                 locationStatus.style.background = '#10b981';
-                
+
                 setTimeout(() => {
                     locationStatus.style.display = 'none';
                 }, 3000);
@@ -49,7 +49,7 @@ function getUserLocation() {
                 console.error('Geolocation error:', error);
                 locationStatus.innerHTML = '⚠️ Location access denied';
                 locationStatus.style.background = '#ef4444';
-                
+
                 setTimeout(() => {
                     locationStatus.style.display = 'none';
                 }, 5000);
@@ -78,17 +78,40 @@ const chatMessages = document.getElementById('chatMessages');
 const chatInput = document.getElementById('chatInput');
 const sendButton = document.getElementById('sendButton');
 
+// Sign code to icon/label mapping
+const SIGN_ICONS = {
+    '-98': '↩️', '-8': '↰', '-7': '↖️', '-6': '🔄', '-3': '⬅️', '-2': '⬅️', '-1': '↙️',
+    '0': '⬆️', '1': '↗️', '2': '➡️', '3': '➡️', '4': '🏁', '5': '📍', '6': '🔄', '7': '↗️', '8': '↪️'
+};
+
+function getSignIcon(sign) {
+    return SIGN_ICONS[String(sign)] || '▶️';
+}
+
+function formatDistance(meters) {
+    if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
+    return `${Math.round(meters)} m`;
+}
+
+function formatDuration(ms) {
+    const minutes = ms / 60000;
+    if (minutes < 60) return `${Math.round(minutes)} min`;
+    const hours = Math.floor(minutes / 60);
+    const mins = Math.round(minutes % 60);
+    return mins > 0 ? `${hours}h ${mins}min` : `${hours}h`;
+}
+
 // Add message to chat
 function addMessage(content, isUser = false, routeData = null) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
-    
+
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     contentDiv.textContent = content;
-    
+
     messageDiv.appendChild(contentDiv);
-    
+
     // Add route info if available
     if (routeData) {
         const routeInfo = document.createElement('div');
@@ -100,8 +123,63 @@ function addMessage(content, isUser = false, routeData = null) {
             <strong>To:</strong> ${routeData.to}
         `;
         messageDiv.appendChild(routeInfo);
+
+        // Add turn-by-turn directions panel if detailed instructions available
+        if (routeData.detailed_instructions && routeData.detailed_instructions.length > 0) {
+            const directionsPanel = document.createElement('div');
+            directionsPanel.className = 'directions-panel';
+
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'directions-toggle';
+            toggleBtn.innerHTML = `📋 Turn-by-Turn Directions (${routeData.detailed_instructions.length} steps) <span class="toggle-arrow">▼</span>`;
+            toggleBtn.onclick = () => {
+                const list = directionsPanel.querySelector('.directions-list');
+                const arrow = toggleBtn.querySelector('.toggle-arrow');
+                if (list.style.display === 'none') {
+                    list.style.display = 'block';
+                    arrow.textContent = '▲';
+                } else {
+                    list.style.display = 'none';
+                    arrow.textContent = '▼';
+                }
+            };
+            directionsPanel.appendChild(toggleBtn);
+
+            const directionsList = document.createElement('div');
+            directionsList.className = 'directions-list';
+            directionsList.style.display = 'none';
+
+            routeData.detailed_instructions.forEach((step, index) => {
+                if (step.sign === 4 || step.sign === 5) {
+                    // Finish / via point
+                    const stepDiv = document.createElement('div');
+                    stepDiv.className = 'direction-step direction-step-finish';
+                    stepDiv.innerHTML = `
+                        <span class="step-icon">${getSignIcon(step.sign)}</span>
+                        <span class="step-text">${step.text}</span>
+                    `;
+                    directionsList.appendChild(stepDiv);
+                    return;
+                }
+                const stepDiv = document.createElement('div');
+                stepDiv.className = 'direction-step';
+                stepDiv.innerHTML = `
+                    <span class="step-number">${index + 1}</span>
+                    <span class="step-icon">${getSignIcon(step.sign)}</span>
+                    <div class="step-details">
+                        <span class="step-text">${step.text}</span>
+                        ${step.street_name ? `<span class="step-road">${step.street_name}</span>` : ''}
+                        <span class="step-meta">${formatDistance(step.distance_m)} · ${formatDuration(step.time_ms)}</span>
+                    </div>
+                `;
+                directionsList.appendChild(stepDiv);
+            });
+
+            directionsPanel.appendChild(directionsList);
+            messageDiv.appendChild(directionsPanel);
+        }
     }
-    
+
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -111,11 +189,11 @@ function addLoadingMessage() {
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message agent-message';
     messageDiv.id = 'loading-message';
-    
+
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     contentDiv.innerHTML = 'Thinking<span class="loading"></span>';
-    
+
     messageDiv.appendChild(contentDiv);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -135,7 +213,7 @@ function drawRoute(routeData) {
         map.removeLayer(routeLayer);
     }
     markersLayer.clearLayers();
-    
+
     // Draw polyline
     const polyline = routeData.polyline;
     routeLayer = L.polyline(polyline, {
@@ -143,31 +221,31 @@ function drawRoute(routeData) {
         weight: 5,
         opacity: 0.7
     }).addTo(map);
-    
+
     // Add start marker
     const startIcon = L.divIcon({
         className: 'custom-marker',
         html: '<div style="background: #10b981; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
         iconSize: [24, 24]
     });
-    
-    L.marker([routeData.start_point.lat, routeData.start_point.lng], {icon: startIcon})
+
+    L.marker([routeData.start_point.lat, routeData.start_point.lng], { icon: startIcon })
         .bindPopup(`<b>Start:</b> ${routeData.from}`)
         .addTo(markersLayer);
-    
+
     // Add end marker
     const endIcon = L.divIcon({
         className: 'custom-marker',
         html: '<div style="background: #ef4444; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
         iconSize: [24, 24]
     });
-    
-    L.marker([routeData.end_point.lat, routeData.end_point.lng], {icon: endIcon})
+
+    L.marker([routeData.end_point.lat, routeData.end_point.lng], { icon: endIcon })
         .bindPopup(`<b>Destination:</b> ${routeData.to}`)
         .addTo(markersLayer);
-    
+
     // Fit map to route
-    map.fitBounds(routeLayer.getBounds(), {padding: [50, 50]});
+    map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
 }
 
 // Add POI markers
@@ -178,8 +256,8 @@ function addPOIMarkers(pois) {
             html: '<div style="background: #f59e0b; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
             iconSize: [20, 20]
         });
-        
-        L.marker([poi.lat, poi.lng], {icon: poiIcon})
+
+        L.marker([poi.lat, poi.lng], { icon: poiIcon })
             .bindPopup(`<b>${poi.name}</b><br>${poi.type}`)
             .addTo(markersLayer);
     });
@@ -189,23 +267,23 @@ function addPOIMarkers(pois) {
 async function sendMessage() {
     const message = chatInput.value.trim();
     if (!message) return;
-    
+
     // Add user message
     addMessage(message, true);
     chatInput.value = '';
-    
+
     // Add loading indicator
     addLoadingMessage();
-    
+
     try {
         const token = getAccessToken();
-        
+
         if (!token) {
             throw new Error('Not authenticated');
         }
-        
+
         console.log('Sending message with token:', token ? 'Token present' : 'No token');
-        
+
         // Send to backend API with auth
         const response = await fetch('http://localhost:8000/chat', {
             method: 'POST',
@@ -213,42 +291,42 @@ async function sendMessage() {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 message,
                 session_id: currentSessionId,
                 user_location: userLocation  // Send GPS location
             })
         });
-        
+
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        
+
         const data = await response.json();
-        
+
         // Store session ID
         currentSessionId = data.session_id;
-        
+
         removeLoadingMessage();
-        
+
         // Add agent response
         addMessage(data.message, false, data.route_data);
-        
+
         // Draw route if available
         if (data.route_data && data.route_data.polyline) {
             drawRoute(data.route_data);
         }
-        
+
         // Add POI markers if available
         if (data.pois && data.pois.length > 0) {
             addPOIMarkers(data.pois);
         }
-        
+
         // Display location candidates if available
         if (data.location_candidates && data.location_candidates.length > 0) {
             displayLocationCandidates(data.location_candidates);
         }
-        
+
     } catch (error) {
         removeLoadingMessage();
         console.error('Full error:', error);
@@ -273,7 +351,7 @@ chatInput.addEventListener('keypress', (e) => {
 function displayLocationCandidates(candidates) {
     // Clear existing markers
     markersLayer.clearLayers();
-    
+
     // Add markers for each candidate
     candidates.forEach((candidate, index) => {
         const icon = L.divIcon({
@@ -281,8 +359,8 @@ function displayLocationCandidates(candidates) {
             html: `<div style="background: #3b82f6; width: 32px; height: 32px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 16px;">${candidate.id}</div>`,
             iconSize: [32, 32]
         });
-        
-        const marker = L.marker([candidate.coordinates.lat, candidate.coordinates.lng], {icon: icon})
+
+        const marker = L.marker([candidate.coordinates.lat, candidate.coordinates.lng], { icon: icon })
             .bindPopup(`
                 <div style="min-width: 200px;">
                     <strong>${candidate.name}</strong><br>
@@ -291,19 +369,19 @@ function displayLocationCandidates(candidates) {
                 </div>
             `)
             .addTo(markersLayer);
-        
+
         // Open popup for first marker
         if (index === 0) {
             marker.openPopup();
         }
     });
-    
+
     // Fit map to show all candidates
     if (candidates.length > 0) {
         const bounds = L.latLngBounds(
             candidates.map(c => [c.coordinates.lat, c.coordinates.lng])
         );
-        map.fitBounds(bounds, {padding: [50, 50]});
+        map.fitBounds(bounds, { padding: [50, 50] });
     }
 }
 

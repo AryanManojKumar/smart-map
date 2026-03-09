@@ -21,6 +21,7 @@ from backend.tools.location_search_tool import search_locations
 from backend.config import KIE_API_KEY, KIE_BASE_URL
 from backend.utils.logger import AgentLogger
 from typing import Optional
+from backend.utils.route_context import build_route_context
 import json
 import requests
 import re
@@ -211,31 +212,47 @@ def router_node(state: SupervisorState):
     history_messages = messages[-21:-1] if len(messages) > 1 else []
     history_text = format_conversation_history(history_messages)
     
+    # Check if there's an active route for route_question detection
+    has_route = bool(state.get("route_data"))
+    
+    route_hint = ""
+    if has_route:
+        route_hint = """\n4. If the user is asking about the CURRENT/ACTIVE route (e.g. "how many highways?", "list the turns", 
+   "how many lanes?", "what roads are we taking?", "any tolls?", "total distance on NH?",
+   "show me the directions", "what surface?", "which countries?"), set intent to "route_question".
+   This is ONLY for questions about an already-computed route, NOT for requesting a new route."""
+    
     intent_prompt = """You are a navigation assistant supervisor. Analyze the user's message and determine their intent.
 
 Extract:
-1. Intent: "routing", "search", or "conversation"
+1. Intent: "routing", "search", "conversation"{route_question_option}
 2. If routing: Extract location_a (start) and location_b (destination)
    - Leave location_a empty if user wants to start from current location
    - If user references a previous route context (e.g., "what about by bike?"), extract the same locations
 3. If search: Extract poi_type (gas station, restaurant, etc.)
 
-Conversation history:
+{active_route_note}Conversation history:
 {history}
 
 Current user message: "{message}"
 
 Respond ONLY with valid JSON:
 {{
-    "intent": "routing" or "search" or "conversation",
+    "intent": "routing" or "search" or "conversation"{route_question_json_option},
     "location_a": "start location or empty string",
     "location_b": "destination or empty string",
     "poi_type": "search type or empty string",
     "clarification_needed": false,
     "clarification_message": ""
-}}"""
+}}""".format(
+        route_question_option=' or "route_question"' if has_route else '',
+        route_question_json_option=' or "route_question"' if has_route else '',
+        active_route_note=f'NOTE: There is an ACTIVE ROUTE from {state.get("route_data", {}).get("from", "?")} to {state.get("route_data", {}).get("to", "?")}. If the user asks about this route, use intent "route_question".\n\n' if has_route else '',
+        history=history_text,
+        message=user_message
+    )
     
-    combined_prompt = intent_prompt.format(history=history_text, message=user_message)
+    combined_prompt = intent_prompt
     AgentLogger.llm_prompt("Intent Detection (Gemini)", combined_prompt, num_context_messages=len(history_messages))
     
     try:
@@ -271,6 +288,8 @@ Respond ONLY with valid JSON:
         elif intent == "search":
             result["_search_params"] = {"poi_type": intent_data.get("poi_type", "")}
             AgentLogger.node_route("router", "search_node", f"POI: {intent_data.get('poi_type', '')}")
+        elif intent == "route_question":
+            AgentLogger.node_route("router", "route_question_node", "Route Q&A")
         else:
             AgentLogger.node_route("router", "conversation_node", "General conversation")
         
@@ -366,12 +385,18 @@ def routing_node(state: SupervisorState):
     try:
         route_data = routing_engine(location_a, location_b)
         AgentLogger.state_update("route_data", route_data)
-        response = f"I found a route from {route_data['from']} to {route_data['to']}! It's {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes."
+        
+        # Build route context for conversational Q&A
+        route_context = build_route_context(route_data)
+        AgentLogger.info(f"Built route context ({len(route_context)} chars)")
+        
+        response = f"I found a route from {route_data['from']} to {route_data['to']}! It's {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes.\n\n💡 You can now ask me anything about this route — highway details, lane counts, turn-by-turn directions, road surfaces, and more!"
         AgentLogger.agent_response(response)
         AgentLogger.node_exit("routing_node", "routing")
         return {
             "messages": [AIMessage(content=response)],
             "route_data": route_data,
+            "route_context": route_context,
             "current_intent": "routing"
         }
     except Exception as e:
@@ -420,12 +445,18 @@ def conversation_node(state: SupervisorState):
     context_messages = messages[-11:-1] if len(messages) > 1 else []
     history_text = format_conversation_history(context_messages)
     
+    route_hint = ""
+    if state.get("route_data"):
+        rd = state["route_data"]
+        route_hint = f"\n\nNote: There is an active route from {rd.get('from', '?')} to {rd.get('to', '?')} ({rd.get('distance_km', '?')} km). If the user asks about it, suggest they can ask questions about the route details."
+    
     conversation_prompt = f"""You are a friendly navigation assistant named Nav AI.
 
 Your capabilities:
 - Find routes between any two locations worldwide
 - Search for places like gas stations, restaurants, hotels, parking, etc.
 - Provide navigation assistance and travel information
+- Answer detailed questions about active routes (highways, lanes, turns, road types){route_hint}
 
 Conversation history:
 {history_text}
@@ -449,6 +480,71 @@ Respond naturally. Be concise, helpful, and enthusiastic about navigation."""
         AgentLogger.error(f"Conversation error: {str(e)}")
         return {
             "messages": [AIMessage(content="I'm here to help with navigation! Ask me for directions or to find places nearby.")],
+            "current_intent": "error"
+        }
+
+
+def route_question_node(state: SupervisorState):
+    """
+    Handle questions about the active route — uses Claude with the full
+    route context document to provide data-backed answers.
+    """
+    AgentLogger.node_enter("route_question_node")
+    
+    messages = state["messages"]
+    user_message = messages[-1].content
+    route_context = state.get("route_context", "")
+    route_data = state.get("route_data", {})
+    
+    # If no route context, rebuild it from route_data
+    if not route_context and route_data:
+        route_context = build_route_context(route_data)
+        AgentLogger.info(f"Rebuilt route context ({len(route_context)} chars)")
+    
+    if not route_context:
+        AgentLogger.node_exit("route_question_node", "no_route")
+        return {
+            "messages": [AIMessage(content="I don't have an active route to answer questions about. Would you like me to find a route first?")],
+            "current_intent": "conversation"
+        }
+    
+    # Build conversation context
+    context_messages = messages[-6:-1] if len(messages) > 1 else []
+    history_text = format_conversation_history(context_messages)
+    
+    route_qa_prompt = f"""You are a navigation assistant with detailed knowledge of the user's current route.
+
+Below is the COMPLETE route data. Use ONLY this data to answer the user's question.
+Do NOT make up information not present in the data. If the data doesn't contain what they're asking about, say so.
+
+--- ROUTE DATA ---
+{route_context}
+--- END ROUTE DATA ---
+
+Conversation history:
+{history_text}
+
+User's question: "{user_message}"
+
+Provide a clear, specific, data-backed answer. Use numbers and road names from the data above.
+Format your response nicely with bullet points or numbered lists when listing multiple items.
+Be conversational but precise."""
+    
+    AgentLogger.llm_prompt("Route Q&A (Claude)", route_qa_prompt, num_context_messages=len(context_messages))
+    
+    try:
+        response_text = call_claude_api([HumanMessage(content=route_qa_prompt)], purpose="route_question")
+        AgentLogger.llm_response("Route Q&A", response_text)
+        AgentLogger.agent_response(response_text)
+        AgentLogger.node_exit("route_question_node", "route_question")
+        return {
+            "messages": [AIMessage(content=response_text)],
+            "current_intent": "route_question"
+        }
+    except Exception as e:
+        AgentLogger.error(f"Route Q&A error: {str(e)}")
+        return {
+            "messages": [AIMessage(content="I had trouble analyzing the route data. Could you try rephrasing your question?")],
             "current_intent": "error"
         }
 
@@ -576,13 +672,18 @@ For "question": Answer their question, then ask which location they'd like."""
                     AgentLogger.state_update("route_data", route_data)
                     AgentLogger.state_update("pending_candidates", "cleared")
                     
-                    response = f"{answer}\n\nThe route is {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes."
+                    # Build route context for conversational Q&A
+                    route_context = build_route_context(route_data)
+                    AgentLogger.info(f"Built route context ({len(route_context)} chars)")
+                    
+                    response = f"{answer}\n\nThe route is {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes.\n\n💡 You can now ask me anything about this route — highway details, lane counts, turn-by-turn directions, road surfaces, and more!"
                     AgentLogger.agent_response(response)
                     AgentLogger.node_exit("disambiguation_node", "routing")
                     
                     return {
                         "messages": [AIMessage(content=response)],
                         "route_data": route_data,
+                        "route_context": route_context,
                         "current_intent": "routing",
                         "pending_candidates": None,
                         "location_candidates": None
@@ -717,6 +818,8 @@ def _route_by_intent(state: SupervisorState) -> str:
         return "search_node"
     elif intent == "disambiguation":
         return "disambiguation_node"
+    elif intent == "route_question":
+        return "route_question_node"
     elif intent in ("error", "clarification"):
         return END
     else:
@@ -732,6 +835,7 @@ def create_supervisor_agent(checkpointer=None):
     workflow.add_node("search_node", search_node)
     workflow.add_node("conversation_node", conversation_node)
     workflow.add_node("disambiguation_node", disambiguation_node)
+    workflow.add_node("route_question_node", route_question_node)
     
     workflow.set_entry_point("router")
     
@@ -740,6 +844,7 @@ def create_supervisor_agent(checkpointer=None):
         "search_node": "search_node",
         "conversation_node": "conversation_node",
         "disambiguation_node": "disambiguation_node",
+        "route_question_node": "route_question_node",
         END: END
     })
     
@@ -747,6 +852,7 @@ def create_supervisor_agent(checkpointer=None):
     workflow.add_edge("search_node", END)
     workflow.add_edge("conversation_node", END)
     workflow.add_edge("disambiguation_node", END)
+    workflow.add_edge("route_question_node", END)
     
     return workflow.compile(checkpointer=checkpointer)
 

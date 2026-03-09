@@ -24,10 +24,13 @@ class SupervisorState(TypedDict):
     # Last computed route data (polyline, distance, time, etc.)
     route_data: Optional[Dict[str, Any]]
     
+    # Pre-built route context document for conversational Q&A about active route
+    route_context: Optional[str]
+    
     # User's current GPS location {lat, lng}
     location: Optional[Dict[str, float]]
     
-    # Current detected intent: routing | search | conversation | disambiguation | error
+    # Current detected intent: routing | search | conversation | route_question | disambiguation | error
     current_intent: str
     
     # Location disambiguation state (stored between turns)

@@ -68,7 +68,8 @@ def get_route(location_a: str, location_b: str, vehicle: str = "car") -> dict:
         vehicle: Vehicle type (car, bike, foot)
     
     Returns:
-        Dictionary containing route information including distance, time, polyline, and directions
+        Dictionary containing route information including distance, time, polyline,
+        detailed turn-by-turn directions, and road-level details (road_class, lanes, etc.)
     """
     
     AgentLogger.routing_start(location_a, location_b)
@@ -77,7 +78,7 @@ def get_route(location_a: str, location_b: str, vehicle: str = "car") -> dict:
     coords_a = _geocode(location_a)
     coords_b = _geocode(location_b)
     
-    # Get route
+    # Get route with rich details
     AgentLogger.routing_calculating()
     route_url = f"{GRAPHHOPPER_BASE_URL}/route"
     
@@ -95,6 +96,7 @@ def get_route(location_a: str, location_b: str, vehicle: str = "car") -> dict:
             "instructions": "true",
             "calc_points": "true",
             "points_encoded": "false",
+            "details": ["road_class", "street_name", "lanes", "max_speed", "surface", "country"],
             "key": GRAPHHOPPER_API_KEY,
         },
     )
@@ -110,10 +112,31 @@ def get_route(location_a: str, location_b: str, vehicle: str = "car") -> dict:
     # Extract polyline coordinates
     polyline = [[point[1], point[0]] for point in path["points"]["coordinates"]]
     
+    # Extract detailed instructions (full objects, not just text)
+    detailed_instructions = []
+    for instr in path.get("instructions", []):
+        detailed_instructions.append({
+            "text": instr.get("text", ""),
+            "street_name": instr.get("street_name", ""),
+            "sign": instr.get("sign", 0),
+            "distance_m": round(instr.get("distance", 0), 1),
+            "time_ms": instr.get("time", 0),
+            "interval": instr.get("interval", []),
+        })
+    
+    # Extract road-level details (segment arrays)
+    road_details = {}
+    for detail_key in ["road_class", "street_name", "lanes", "max_speed", "surface", "country"]:
+        raw = path.get("details", {}).get(detail_key, [])
+        # Each entry is [from_index, to_index, value]
+        road_details[detail_key] = raw
+    
     result = {
         "distance_km": round(path["distance"] / 1000, 2),
         "time_minutes": round(path["time"] / 60000, 2),
-        "instructions": [instr["text"] for instr in path["instructions"]],
+        "instructions": [instr["text"] for instr in path.get("instructions", [])],
+        "detailed_instructions": detailed_instructions,
+        "road_details": road_details,
         "polyline": polyline,
         "start_point": {"lat": coords_a["lat"], "lng": coords_a["lng"]},
         "end_point": {"lat": coords_b["lat"], "lng": coords_b["lng"]},

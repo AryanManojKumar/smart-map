@@ -342,3 +342,132 @@ body {
 .user-location-marker div {
     animation: pulse 2s infinite;
 }
+
+/* ── Turn-by-Turn Directions Panel ── */
+.directions-panel {
+    margin-top: 10px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+}
+
+.directions-toggle {
+    width: 100%;
+    padding: 10px 14px;
+    background: #eef2ff;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: #3730a3;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.2s;
+}
+
+.directions-toggle:hover {
+    background: #e0e7ff;
+}
+
+.toggle-arrow {
+    margin-left: auto;
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+.directions-list {
+    max-height: 360px;
+    overflow-y: auto;
+    background: #fafbfc;
+}
+
+.directions-list::-webkit-scrollbar {
+    width: 4px;
+}
+
+.directions-list::-webkit-scrollbar-thumb {
+    background: #c7d2dd;
+    border-radius: 2px;
+}
+
+.direction-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px;
+    border-bottom: 1px solid #f0f1f3;
+    transition: background 0.15s;
+}
+
+.direction-step:hover {
+    background: #f0f4ff;
+}
+
+.direction-step:last-child {
+    border-bottom: none;
+}
+
+.step-number {
+    min-width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #e0e7ff;
+    color: #3730a3;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.step-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+    line-height: 1;
+    margin-top: 2px;
+}
+
+.step-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.step-text {
+    font-size: 13px;
+    color: #1e293b;
+    line-height: 1.35;
+}
+
+.step-road {
+    font-size: 11px;
+    color: #6366f1;
+    background: #eef2ff;
+    padding: 1px 6px;
+    border-radius: 4px;
+    display: inline-block;
+    width: fit-content;
+}
+
+.step-meta {
+    font-size: 11px;
+    color: #94a3b8;
+    white-space: nowrap;
+}
+
+.direction-step-finish {
+    background: #f0fdf4;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.direction-step-finish .step-text {
+    font-weight: 600;
+    color: #166534;
+}
