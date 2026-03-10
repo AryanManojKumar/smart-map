@@ -183,6 +183,18 @@ def is_coordinates(location: str) -> bool:
     return False
 
 
+def normalize_vehicle(raw: str) -> str:
+    """Normalize free-form vehicle descriptions to routing profiles."""
+    if not raw:
+        return "car"
+    value = str(raw).strip().lower()
+    if value in {"walk", "walking", "on foot", "foot", "pedestrian"}:
+        return "foot"
+    if value in {"bike", "bicycle", "cycling", "cycle"}:
+        return "bike"
+    return "car"
+
+
 def format_location_options(query: str, candidates: list) -> str:
     """Format location candidates as a user-friendly message."""
     response = f"I found {len(candidates)} locations for '{query}':\n\n"
@@ -268,7 +280,10 @@ Extract:
 2. If routing: Extract location_a (start) and location_b (destination)
    - Leave location_a empty if user wants to start from current location
    - If user references a previous route context (e.g., "what about by bike?"), extract the same locations
-3. If search: Extract poi_type (gas station, restaurant, etc.)
+3. If routing: Also extract routing preferences when present:
+   - vehicle: "car", "bike", or "foot" (walking)
+   - avoid: list of constraints like "highways", "tolls", "ferries"
+4. If search: Extract poi_type (gas station, restaurant, etc.)
 
 {active_route_note}Conversation history:
 {history}
@@ -281,6 +296,8 @@ Respond ONLY with valid JSON:
     "location_a": "start location or empty string",
     "location_b": "destination or empty string",
     "poi_type": "search type or empty string",
+    "vehicle": "car" or "bike" or "foot" or "",
+    "avoid": ["highways", "tolls", "ferries"] or [],
     "clarification_needed": false,
     "clarification_message": ""
 }}""".format(
@@ -323,6 +340,17 @@ Respond ONLY with valid JSON:
             location_a = intent_data.get("location_a", "")
             location_b = intent_data.get("location_b", "")
             result["_routing_params"] = {"location_a": location_a, "location_b": location_b}
+            
+            # Persist routing preferences inferred from this turn
+            vehicle_raw = intent_data.get("vehicle", "") or ""
+            avoid_raw = intent_data.get("avoid", []) or []
+            prefs = {
+                "vehicle": normalize_vehicle(vehicle_raw),
+                "avoid": avoid_raw,
+            }
+            result["routing_preferences"] = prefs
+            AgentLogger.state_update("routing_preferences", prefs)
+            
             AgentLogger.node_route("router", "routing_node", f"{location_a or '(GPS)'} → {location_b}")
         elif intent == "search":
             result["_search_params"] = {"poi_type": intent_data.get("poi_type", "")}
@@ -337,11 +365,18 @@ Respond ONLY with valid JSON:
     
     except json.JSONDecodeError as e:
         AgentLogger.error(f"Intent parse failed: {str(e)}")
-        return {"current_intent": "conversation"}
+        # Surface the parsing error to the caller instead of silently
+        # falling back to a generic conversation response.
+        return {
+            "messages": [AIMessage(content=f"Intent detection failed due to invalid JSON from the intent model: {e}")],
+            "current_intent": "error",
+        }
     except Exception as e:
         AgentLogger.error(f"Router error: {str(e)}")
+        # Expose the underlying router error so the frontend / caller
+        # can see what actually went wrong.
         return {
-            "messages": [AIMessage(content="I'm here to help with navigation! Ask me for directions or to find places nearby.")],
+            "messages": [AIMessage(content=f"Router error: {e}")],
             "current_intent": "error"
         }
 
@@ -351,6 +386,7 @@ def routing_node(state: SupervisorState):
     AgentLogger.node_enter("routing_node")
     
     user_location = state.get("location")
+    routing_prefs = state.get("routing_preferences") or {}
     routing_params = state.get("_routing_params", {})
     location_a = routing_params.get("location_a", "")
     location_b = routing_params.get("location_b", "")
@@ -419,15 +455,13 @@ def routing_node(state: SupervisorState):
         location_b = f"{loc_b['coordinates']['lat']},{loc_b['coordinates']['lng']}"
         AgentLogger.info(f"Resolved destination → ({location_b})")
     
-    # Compute route (with alternatives)
-    AgentLogger.tool_call("routing_engine", {"from": location_a, "to": location_b})
+    # Compute route
+    vehicle = normalize_vehicle(routing_prefs.get("vehicle"))
+    AgentLogger.tool_call("routing_engine", {"from": location_a, "to": location_b, "vehicle": vehicle})
     try:
-        route_data = routing_engine(location_a, location_b)
-        
-        # Extract alternatives before storing
-        alternatives = route_data.pop("alternative_routes", [])
-        
+        route_data = routing_engine(location_a, location_b, vehicle=vehicle)
         AgentLogger.state_update("route_data", route_data)
+        alternatives = route_data.get("alternative_routes", [])
         
         # Build route context for conversational Q&A
         route_context = build_route_context(route_data)
@@ -726,16 +760,15 @@ For "question": Answer their question, then ask which location they'd like."""
                 if not is_coordinates(location_a) and user_location:
                     location_a = f"{user_location['lat']},{user_location['lng']}"
                 
-                AgentLogger.tool_call("routing_engine", {"from": location_a, "to": location_b})
+                routing_prefs = state.get("routing_preferences") or {}
+                vehicle = normalize_vehicle(routing_prefs.get("vehicle"))
+                AgentLogger.tool_call("routing_engine", {"from": location_a, "to": location_b, "vehicle": vehicle})
                 
                 try:
-                    route_data = routing_engine(location_a, location_b)
-                    
-                    # Extract alternatives before storing
-                    alternatives = route_data.pop("alternative_routes", [])
-                    
+                    route_data = routing_engine(location_a, location_b, vehicle=vehicle)
                     AgentLogger.state_update("route_data", route_data)
                     AgentLogger.state_update("pending_candidates", "cleared")
+                    alternatives = route_data.get("alternative_routes", [])
                     
                     # Build route context for conversational Q&A
                     route_context = build_route_context(route_data)
@@ -819,11 +852,10 @@ For "question": Answer their question, then ask which location they'd like."""
                             location_a = f"{user_location['lat']},{user_location['lng']}"
                         
                         try:
-                            route_data = routing_engine(location_a, location_b)
-                            
-                            # Extract alternatives before storing
-                            alternatives = route_data.pop("alternative_routes", [])
-                            
+                            routing_prefs = state.get("routing_preferences") or {}
+                            vehicle = normalize_vehicle(routing_prefs.get("vehicle"))
+                            route_data = routing_engine(location_a, location_b, vehicle=vehicle)
+                            alternatives = route_data.get("alternative_routes", [])
                             response = f"Found it! {chosen['name']} ({chosen['address']}). The route is {route_data['distance_km']} km and will take about {route_data['time_minutes']} minutes."
                             
                             if alternatives:
