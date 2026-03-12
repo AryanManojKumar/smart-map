@@ -5,8 +5,10 @@ Uses PostgreSQL checkpointing to persist full state (messages, route data,
 disambiguation candidates) between conversation turns via thread_id.
 
 LLM Strategy:
-  - Gemini 2.5 Flash: Fast intent detection (router)
-  - Claude Sonnet 4.5: Smart disambiguation + conversation (needs reasoning)
+  - Gemini 3 Flash (via Kie API): All reasoning — intent detection,
+    disambiguation, conversation, route Q&A. Capability docs
+    (backend/agents/docs/*.md) are loaded once and injected as a compact
+    summary so the supervisor knows what each sub-agent can do.
 
 Graph structure:
   router → routing_node | search_node | conversation_node | disambiguation_node → END
@@ -17,27 +19,38 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from backend.models.state import SupervisorState
 from backend.agents.routing_engine import routing_engine
 from backend.agents.search_agent import run_search_agent
-from backend.tools.location_search_tool import search_locations
+from backend.tools.location_search_tool import search_locations, format_distance
+from backend.agents.capabilities import CAPABILITY_SUMMARY
 from backend.config import KIE_API_KEY, KIE_BASE_URL
 from backend.utils.logger import AgentLogger
-from typing import Optional
 from backend.utils.route_context import build_route_context
 import json
 import requests
-import re
 
 
 # ──────────────────────────────────────────────
 # LLM Helpers
 # ──────────────────────────────────────────────
 
-def call_kie_api(messages, purpose: str = ""):
-    """Call Gemini 2.5 Flash via Kie API — fast, for intent detection."""
+def call_gemini_api(messages, purpose: str = "", reasoning_effort: str = "high"):
+    """
+    Call Gemini 3 Flash via Kie API.
+
+    Used for ALL LLM tasks: intent detection, disambiguation, conversation,
+    route Q&A. The `reasoning_effort` parameter can be tuned per call-site:
+      - "low":  fast, for simple classification / chat
+      - "high": slower but better reasoning, for disambiguation / route Q&A
+
+    (Kie API only supports "low" and "high" — no "medium".)
+    """
+    if reasoning_effort not in ("low", "high"):
+        reasoning_effort = "high"
+
     headers = {
         "Authorization": f"Bearer {KIE_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     formatted_messages = []
     for msg in messages:
         if isinstance(msg, SystemMessage):
@@ -46,85 +59,43 @@ def call_kie_api(messages, purpose: str = ""):
             role = "assistant"
         else:
             role = "user"
-        formatted_messages.append({"role": role, "content": msg.content})
-    
-    payload = {
-        "model": "gemini-2.5-flash",
-        "messages": formatted_messages,
-        "temperature": 0,
-        "stream": False
-    }
-    
-    total_chars = sum(len(m["content"]) for m in formatted_messages)
-    AgentLogger.api_call("Kie AI (Gemini 2.5 Flash)", f"{KIE_BASE_URL}/gemini-2.5-flash/v1/chat/completions",
-                         model="gemini-2.5-flash", payload_size=total_chars)
-    
-    response = requests.post(
-        f"{KIE_BASE_URL}/gemini-2.5-flash/v1/chat/completions",
-        headers=headers, json=payload, timeout=60
-    )
-    data = response.json()
-    
-    if "choices" in data and data["choices"]:
-        content = data["choices"][0].get("message", {}).get("content")
-        if content:
-            AgentLogger.api_response("Gemini 2.5 Flash", response.status_code, content[:200])
-            return content
-    if "data" in data and data["data"]:
-        return str(data["data"])
-    
-    AgentLogger.error(f"Gemini API error: {data.get('msg', 'unknown')}")
-    raise Exception(f"Could not extract content. Keys: {list(data.keys())}")
-
-
-def call_claude_api(messages, purpose: str = ""):
-    """Call Claude Sonnet 4.5 via Kie API — smart, for reasoning & disambiguation."""
-    headers = {
-        "Authorization": f"Bearer {KIE_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    formatted_messages = []
-    for msg in messages:
-        if isinstance(msg, SystemMessage):
-            role = "system"
-        elif isinstance(msg, AIMessage):
-            role = "assistant"
-        else:
-            role = "user"
-        # Claude API via Kie expects content as array of objects
         formatted_messages.append({
             "role": role,
             "content": [{"type": "text", "text": msg.content}]
         })
-    
+
     payload = {
         "messages": formatted_messages,
-        "stream": False,
-        "include_thoughts": False,
-        "reasoning_effort": "low"
+        "reasoning_effort": reasoning_effort,
     }
-    
+
     total_chars = sum(len(msg.content) for msg in messages)
-    AgentLogger.api_call("Kie AI (Claude Sonnet 4.5)", f"{KIE_BASE_URL}/claude-opus-4-5/v1/chat/completions",
-                         model="claude-sonnet-4.5", payload_size=total_chars)
-    
+    AgentLogger.api_call(
+        f"Kie AI (Gemini 3 Flash | effort={reasoning_effort})",
+        f"{KIE_BASE_URL}/gemini-3-flash/v1/chat/completions",
+        model="gemini-3-flash",
+        payload_size=total_chars,
+    )
+
     response = requests.post(
-        f"{KIE_BASE_URL}/claude-opus-4-5/v1/chat/completions",
-        headers=headers, json=payload, timeout=90
+        f"{KIE_BASE_URL}/gemini-3-flash/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=90,
     )
     data = response.json()
-    
+
     if "choices" in data and data["choices"]:
         content = data["choices"][0].get("message", {}).get("content")
         if content:
-            AgentLogger.api_response("Claude Sonnet 4.5", response.status_code, content[:200])
+            AgentLogger.api_response("Gemini 3 Flash", response.status_code, content[:200])
             return content
     if "data" in data and data["data"]:
         return str(data["data"])
-    
-    AgentLogger.error(f"Claude API error: {data.get('msg', 'unknown')}")
-    raise Exception(f"Could not extract Claude response. Keys: {list(data.keys())}")
+
+    AgentLogger.error(f"Gemini API error (HTTP {response.status_code}): {json.dumps(data, indent=2)}")
+    AgentLogger.error(f"Payload sent: messages={len(formatted_messages)}, effort={reasoning_effort}")
+    raise Exception(f"Could not extract Gemini response. Keys: {list(data.keys())}")
 
 
 # ──────────────────────────────────────────────
@@ -238,110 +209,178 @@ def format_conversation_history(messages) -> str:
 # Graph Nodes
 # ──────────────────────────────────────────────
 
+def _build_search_candidates(pois: list, user_location: dict = None) -> list:
+    """Convert POI search results into disambiguation-compatible candidates."""
+    candidates = []
+    for idx, poi in enumerate(pois, 1):
+        candidate = {
+            "id": idx,
+            "name": poi.get("name", "Unnamed"),
+            "address": poi.get("address", ""),
+            "coordinates": {"lat": poi["lat"], "lng": poi["lng"]},
+            "type": poi.get("type", "poi"),
+        }
+        if poi.get("distance_km") is not None:
+            candidate["distance_km"] = poi["distance_km"]
+            candidate["distance_text"] = format_distance(poi["distance_km"])
+        candidates.append(candidate)
+    return candidates
+
+
 def router_node(state: SupervisorState):
     """
     Main routing node — determines which handler to invoke.
-    Uses Gemini 2.5 Flash for fast intent detection.
+    Uses GPT-5-2 for intent detection, informed by
+    capability docs loaded from backend/agents/docs/.
     """
     AgentLogger.node_enter("router", f"Message: \"{state['messages'][-1].content[:80]}\"")
-    
+
     messages = state["messages"]
     user_message = messages[-1].content
     pending_candidates = state.get("pending_candidates")
-    
+    user_location = state.get("location")
+
     # Show conversation context
     context_messages = messages[:-1]
     AgentLogger.conversation_context(context_messages)
-    
-    # If disambiguating, route directly — Claude will handle it smartly
+
+    # ── Fast-path: disambiguation in progress ──
     if pending_candidates and pending_candidates.get("candidates"):
         num = len(pending_candidates["candidates"])
-        AgentLogger.node_route("router", "disambiguation_node", f"{num} pending candidates — Claude will interpret user response")
+        AgentLogger.node_route("router", "disambiguation_node",
+                               f"{num} pending candidates — GPT will interpret user response")
         return {"current_intent": "disambiguation"}
-    
-    # Build conversation context for intent detection
+
+    # ── Fast-path: previous search results exist and user wants to pick/route ──
+    # Convert search_results into pending_candidates so the disambiguation
+    # node handles selection properly (supports "first one", "number 3",
+    # "Chauhan Hospital", etc.) instead of brittle keyword matching.
+    search_results = state.get("search_results")
+    if search_results and len(search_results) > 0:
+        msg_lower = user_message.lower()
+        selection_signals = [
+            "nearest", "closest", "first", "sabse pass", "subse pass",
+            "pass wala", "paas wala", "pehla", "1st", "le jao", "lejao",
+            "le chalo", "lechalo", "navigate", "take me", "number", "no.",
+            "#", "wala", "2nd", "3rd", "second", "third", "doosra", "teesra",
+        ]
+        if any(kw in msg_lower for kw in selection_signals):
+            candidates = _build_search_candidates(search_results, user_location)
+            if candidates:
+                AgentLogger.info(f"Promoting {len(candidates)} search results to disambiguation")
+                AgentLogger.node_route("router", "disambiguation_node",
+                                       "User selecting from search results")
+                return {
+                    "current_intent": "disambiguation",
+                    "pending_candidates": {
+                        "candidates": candidates,
+                        "context": {
+                            "location_a": f"{user_location['lat']},{user_location['lng']}" if user_location else "",
+                            "location_b": "",
+                            "ambiguous_field": "location_b",
+                            "origin": "search",
+                        },
+                    },
+                    "location_candidates": candidates,
+                }
+
+    # ── LLM-based intent detection (GPT-5-2) ──
     history_messages = messages[-21:-1] if len(messages) > 1 else []
     history_text = format_conversation_history(history_messages)
-    
-    # Check if there's an active route for route_question detection
+
     has_route = bool(state.get("route_data"))
-    
-    route_hint = ""
+    route_note = ""
     if has_route:
-        route_hint = """\n4. If the user is asking about the CURRENT/ACTIVE route (e.g. "how many highways?", "list the turns", 
-   "how many lanes?", "what roads are we taking?", "any tolls?", "total distance on NH?",
-   "show me the directions", "what surface?", "which countries?"), set intent to "route_question".
-   This is ONLY for questions about an already-computed route, NOT for requesting a new route."""
-    
-    intent_prompt = """You are a navigation assistant supervisor. Analyze the user's message and determine their intent.
+        rd = state.get("route_data", {})
+        route_note = (
+            f'5. There is an ACTIVE ROUTE from {rd.get("from", "?")} to '
+            f'{rd.get("to", "?")}. Questions about it → route_question.'
+        )
 
-Extract:
-1. Intent: "routing", "search", "conversation"{route_question_option}
-2. If routing: Extract location_a (start) and location_b (destination)
-   - Leave location_a empty if user wants to start from current location
-   - If user references a previous route context (e.g., "what about by bike?"), extract the same locations
-3. If routing: Also extract routing preferences when present:
-   - vehicle: "car", "bike", or "foot" (walking)
-   - avoid: list of constraints like "highways", "tolls", "ferries"
-4. If search: Extract poi_type (gas station, restaurant, etc.)
+    # ── Build system prompt from capability docs ──
+    route_question_mapping = (
+        '- "route_question" → route_question_node (ONLY when an active route exists)'
+        if has_route else ""
+    )
+    route_question_intent = ' | "route_question"' if has_route else ""
 
-{active_route_note}Conversation history:
-{history}
+    system_prompt = f"""You are the supervisor of a navigation assistant. Your ONLY job is to classify the user's message and route it to the correct sub-agent. You do NOT answer the user directly.
 
-Current user message: "{message}"
+## Sub-agent capabilities (loaded from docs):
 
-Respond ONLY with valid JSON:
+{CAPABILITY_SUMMARY}
+
+## Intent → sub-agent mapping:
+- "routing" → routing_node
+- "search" → search_node
+- "conversation" → conversation_node
+{route_question_mapping}
+
+## Critical routing rules:
+1. GENERIC CATEGORY + proximity words ("nearest", "closest", "nearby", "near me", "pass mein", "sabse pass") → intent = **search**, NOT routing. Always.
+   - "nearest hospital" → search (poi_type: "hospital")
+   - "take me to the nearest petrol pump" → search (poi_type: "fuel") — find it first, route later
+   - "sabse pass wala ATM" → search (poi_type: "atm")
+2. SPECIFIC NAMED PLACE → intent = **routing**
+   - "take me to Apollo Hospital Ahmedabad" → routing (location_b: "Apollo Hospital Ahmedabad")
+   - "Delhi to Mumbai" → routing
+3. Hindi/Hinglish follows the same rules.
+4. If the user references a POI from a PREVIOUS search result by its specific name, that IS routing.
+{route_note}"""
+
+    user_prompt = f"""Conversation history:
+{history_text}
+
+Current user message: "{user_message}"
+
+Respond ONLY with valid JSON (no markdown, no explanation):
 {{
-    "intent": "routing" or "search" or "conversation"{route_question_json_option},
+    "intent": "routing" | "search" | "conversation"{route_question_intent},
     "location_a": "start location or empty string",
-    "location_b": "destination or empty string",
-    "poi_type": "search type or empty string",
-    "vehicle": "car" or "bike" or "foot" or "",
-    "avoid": ["highways", "tolls", "ferries"] or [],
+    "location_b": "specific destination or empty string",
+    "poi_type": "standard POI type or empty string (hospital, fuel, restaurant, cafe, atm, parking, hotel, pharmacy, supermarket, charging_station)",
+    "vehicle": "car" | "bike" | "foot" | "",
+    "avoid": [],
     "clarification_needed": false,
     "clarification_message": ""
-}}""".format(
-        route_question_option=' or "route_question"' if has_route else '',
-        route_question_json_option=' or "route_question"' if has_route else '',
-        active_route_note=f'NOTE: There is an ACTIVE ROUTE from {state.get("route_data", {}).get("from", "?")} to {state.get("route_data", {}).get("to", "?")}. If the user asks about this route, use intent "route_question".\n\n' if has_route else '',
-        history=history_text,
-        message=user_message
-    )
-    
-    combined_prompt = intent_prompt
-    AgentLogger.llm_prompt("Intent Detection (Gemini)", combined_prompt, num_context_messages=len(history_messages))
-    
+}}"""
+
+    AgentLogger.llm_prompt("Intent Detection (Gemini)", user_prompt, num_context_messages=len(history_messages))
+
     try:
-        intent_response = call_kie_api([HumanMessage(content=combined_prompt)], purpose="intent_detection")
+        intent_response = call_gemini_api(
+            [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
+            purpose="intent_detection",
+            reasoning_effort="low",
+        )
         AgentLogger.llm_response("Intent Detection", intent_response)
-        
+
         response_text = intent_response.strip()
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
-        
+
         if json_start >= 0 and json_end > json_start:
             intent_data = json.loads(response_text[json_start:json_end])
         else:
             raise json.JSONDecodeError("No JSON found", response_text, 0)
-        
+
         AgentLogger.llm_parsed_intent(intent_data)
         intent = intent_data.get("intent", "conversation")
-        
+
         if intent_data.get("clarification_needed"):
             AgentLogger.node_exit("router", "clarification")
             return {
                 "messages": [AIMessage(content=intent_data["clarification_message"])],
                 "current_intent": "clarification"
             }
-        
+
         result = {"current_intent": intent}
-        
+
         if intent == "routing":
             location_a = intent_data.get("location_a", "")
             location_b = intent_data.get("location_b", "")
             result["_routing_params"] = {"location_a": location_a, "location_b": location_b}
-            
-            # Persist routing preferences inferred from this turn
+
             vehicle_raw = intent_data.get("vehicle", "") or ""
             avoid_raw = intent_data.get("avoid", []) or []
             prefs = {
@@ -350,31 +389,29 @@ Respond ONLY with valid JSON:
             }
             result["routing_preferences"] = prefs
             AgentLogger.state_update("routing_preferences", prefs)
-            
             AgentLogger.node_route("router", "routing_node", f"{location_a or '(GPS)'} → {location_b}")
+
         elif intent == "search":
             result["_search_params"] = {"poi_type": intent_data.get("poi_type", "")}
             AgentLogger.node_route("router", "search_node", f"POI: {intent_data.get('poi_type', '')}")
+
         elif intent == "route_question":
             AgentLogger.node_route("router", "route_question_node", "Route Q&A")
+
         else:
             AgentLogger.node_route("router", "conversation_node", "General conversation")
-        
+
         AgentLogger.node_exit("router", intent)
         return result
-    
+
     except json.JSONDecodeError as e:
         AgentLogger.error(f"Intent parse failed: {str(e)}")
-        # Surface the parsing error to the caller instead of silently
-        # falling back to a generic conversation response.
         return {
             "messages": [AIMessage(content=f"Intent detection failed due to invalid JSON from the intent model: {e}")],
             "current_intent": "error",
         }
     except Exception as e:
         AgentLogger.error(f"Router error: {str(e)}")
-        # Expose the underlying router error so the frontend / caller
-        # can see what actually went wrong.
         return {
             "messages": [AIMessage(content=f"Router error: {e}")],
             "current_intent": "error"
@@ -498,30 +535,33 @@ def routing_node(state: SupervisorState):
 def search_node(state: SupervisorState):
     """Handle POI search requests — extract POI markers for the map."""
     AgentLogger.node_enter("search_node")
-    
+
     user_message = state["messages"][-1].content
     search_params = state.get("_search_params", {})
     poi_type = search_params.get("poi_type", "")
     route_data = state.get("route_data")
     location = state.get("location")
-    
+
     AgentLogger.info(f"Searching for: {poi_type}")
-    
+
     try:
         result = run_search_agent(user_message, route_data=route_data, location=location)
         agent_response = result["messages"][-1].content
-        
-        # Extract POI data from tool messages for map markers
+
         pois = _extract_pois_from_messages(result.get("messages", []))
         if pois:
             AgentLogger.info(f"Extracted {len(pois)} POIs for map markers")
-        
+
+        # Append a hint so the user knows they can pick one
+        if pois and len(pois) > 1:
+            agent_response += "\n\nWould you like me to navigate to any of these? Just say which one (by number or name)."
+
         AgentLogger.agent_response(agent_response)
         AgentLogger.node_exit("search_node", "search")
         return {
             "messages": [AIMessage(content=agent_response)],
             "current_intent": "search",
-            "search_results": pois
+            "search_results": pois,
         }
     except Exception as e:
         AgentLogger.error(f"Search failed: {str(e)}")
@@ -532,7 +572,7 @@ def search_node(state: SupervisorState):
 
 
 def conversation_node(state: SupervisorState):
-    """Handle general conversation — uses Claude for quality responses."""
+    """Handle general conversation — uses GPT-5-2 for quality responses."""
     AgentLogger.node_enter("conversation_node")
     
     messages = state["messages"]
@@ -560,10 +600,10 @@ Current user message: {user_message}
 
 Respond naturally. Be concise, helpful, and enthusiastic about navigation."""
     
-    AgentLogger.llm_prompt("Conversation (Claude)", conversation_prompt, num_context_messages=len(context_messages))
+    AgentLogger.llm_prompt("Conversation (Gemini)", conversation_prompt, num_context_messages=len(context_messages))
     
     try:
-        response_text = call_claude_api([HumanMessage(content=conversation_prompt)], purpose="conversation")
+        response_text = call_gemini_api([HumanMessage(content=conversation_prompt)], purpose="conversation", reasoning_effort="low")
         AgentLogger.llm_response("Conversation", response_text)
         AgentLogger.agent_response(response_text)
         AgentLogger.node_exit("conversation_node", "conversation")
@@ -581,7 +621,7 @@ Respond naturally. Be concise, helpful, and enthusiastic about navigation."""
 
 def route_question_node(state: SupervisorState):
     """
-    Handle questions about the active route — uses Claude with the full
+    Handle questions about the active route — uses GPT-5-2 with the full
     route context document to provide data-backed answers.
     """
     AgentLogger.node_enter("route_question_node")
@@ -625,10 +665,10 @@ Provide a clear, specific, data-backed answer. Use numbers and road names from t
 Format your response nicely with bullet points or numbered lists when listing multiple items.
 Be conversational but precise."""
     
-    AgentLogger.llm_prompt("Route Q&A (Claude)", route_qa_prompt, num_context_messages=len(context_messages))
+    AgentLogger.llm_prompt("Route Q&A (Gemini)", route_qa_prompt, num_context_messages=len(context_messages))
     
     try:
-        response_text = call_claude_api([HumanMessage(content=route_qa_prompt)], purpose="route_question")
+        response_text = call_gemini_api([HumanMessage(content=route_qa_prompt)], purpose="route_question", reasoning_effort="high")
         AgentLogger.llm_response("Route Q&A", response_text)
         AgentLogger.agent_response(response_text)
         AgentLogger.node_exit("route_question_node", "route_question")
@@ -646,9 +686,9 @@ Be conversational but precise."""
 
 def disambiguation_node(state: SupervisorState):
     """
-    LLM-powered disambiguation — uses Claude to understand user responses naturally.
+    LLM-powered disambiguation — uses GPT-5-2 to understand user responses naturally.
     
-    Claude can handle:
+    GPT can handle:
     - Direct selections: "2", "the first one", "KK Nagar in Chennai"
     - Follow-up questions: "is there any in ahmedabad?", "which is closest?"
     - Re-search requests: "search for KK Nagar in Gujarat instead"
@@ -666,7 +706,7 @@ def disambiguation_node(state: SupervisorState):
     AgentLogger.info(f"User response: \"{user_message}\"")
     AgentLogger.info(f"Candidates: {len(candidates)}")
     
-    # Format candidates for Claude
+    # Format candidates for GPT
     candidates_text = format_candidates_for_llm(candidates)
     
     # Build conversation context
@@ -678,8 +718,19 @@ def disambiguation_node(state: SupervisorState):
     if user_location and user_location.get("lat") and user_location.get("lng"):
         user_location_context = f"\n\nIMPORTANT — The user is currently located at GPS coordinates ({user_location['lat']}, {user_location['lng']}). When they select a location or ask about options, STRONGLY prefer locations that are geographically close to them (same country/region). Do NOT select locations in a different country unless the user explicitly asks for it."
     
-    disambiguation_prompt = f"""You are a navigation assistant helping a user choose a location.{user_location_context}
+    origin = context.get("origin", "geocoding")
+    origin_note = ""
+    if origin == "search":
+        origin_note = """
+NOTE: These candidates came from a nearby POI search (OpenStreetMap), so they are real local results sorted by distance. The user likely wants to navigate to one of them. If they say "nearest", "first", "sabse pass wala", "1", etc., select ID 1 (the closest).
+"""
+    else:
+        origin_note = """
+NOTE: These candidates came from geocoding (place name search), which can return globally spread results. Check distances carefully.
+"""
 
+    disambiguation_prompt = f"""You are a navigation assistant helping a user choose a location.{user_location_context}
+{origin_note}
 The user was searching for a place and I found multiple locations. Here are the candidates:
 
 {candidates_text}
@@ -703,20 +754,24 @@ CRITICAL: When action is "select", the "selected_id" MUST exactly match one of t
 Rules:
 - "select": User is picking a specific location (by number, name, description, city, or other identifier). The selected_id MUST match the candidate's ID number.
 - "question": User is asking about the candidates (e.g. "which is closest?", "is there one in X city?"). Answer helpfully based on the candidate data. If they ask about a city/area not in the list, tell them and suggest re-searching.
-- "re_search": User wants to search differently (e.g. "search in Ahmedabad instead", "find one near me")
+- "re_search": User wants to search differently (e.g. "search in Ahmedabad instead", "find one near me"). USE THIS when:
+  * The user says "nearest to me" / "closest" / "pass wala" BUT all candidates are very far (>50 km away from the user) — suggest a POI search instead
+  * The user explicitly asks to search differently
+  * None of the candidates seem to match what the user actually wants
 - "abandon": User wants to do something else entirely (e.g. "never mind", "take me to Delhi instead")
+
+DISTANCE SANITY CHECK (for geocoding results only): If the user asks for the "nearest" or "closest" option, and even the closest candidate is hundreds of km away, that means the geocoding search failed to find local results. In this case, use "re_search" and suggest the user try a POI search (e.g., "hospital near me") rather than selecting a faraway location. A "nearest hospital" should be within ~10 km, not 1000+ km. This does NOT apply to POI search results, which are already local.
 
 For "select": Confirm the selection with the EXACT name and address from the candidates list.
 For "question": Answer their question, then ask which location they'd like."""
 
-    AgentLogger.llm_prompt("Disambiguation (Claude)", disambiguation_prompt, num_context_messages=len(recent_messages))
+    AgentLogger.llm_prompt("Disambiguation (Gemini)", disambiguation_prompt, num_context_messages=len(recent_messages))
     
     try:
-        claude_response = call_claude_api([HumanMessage(content=disambiguation_prompt)], purpose="disambiguation")
-        AgentLogger.llm_response("Disambiguation", claude_response)
+        gemini_response = call_gemini_api([HumanMessage(content=disambiguation_prompt)], purpose="disambiguation", reasoning_effort="high")
+        AgentLogger.llm_response("Disambiguation", gemini_response)
         
-        # Parse Claude's JSON response
-        response_text = claude_response.strip()
+        response_text = gemini_response.strip()
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
         
@@ -728,7 +783,7 @@ For "question": Answer their question, then ask which location they'd like."""
         action = decision.get("action", "question")
         answer = decision.get("answer", "")
         
-        AgentLogger.info(f"Claude decision: action={action}")
+        AgentLogger.info(f"GPT decision: action={action}")
         
         # ── ACTION: SELECT ──
         if action == "select":
@@ -805,7 +860,7 @@ For "question": Answer their question, then ask which location they'd like."""
                         "location_candidates": None
                     }
             else:
-                # Claude said select but invalid ID — treat as question
+                # GPT said select but invalid ID — treat as question
                 AgentLogger.error(f"Invalid selected_id: {selected_id}")
                 action = "question"
         

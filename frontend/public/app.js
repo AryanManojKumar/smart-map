@@ -26,9 +26,26 @@ let routeMarkersLayer = L.layerGroup().addTo(map);
 let altRoutesLayer = L.layerGroup().addTo(map);
 let poiLayer = L.layerGroup().addTo(map);
 let candidateLayer = L.layerGroup().addTo(map);
+let wazeAlertsLayer = L.layerGroup().addTo(map);
+let wazeJamsLayer = L.layerGroup().addTo(map);
 
 let currentPrimaryRoute = null;
 let currentAlternatives = [];
+
+// ── Waze Alert Type Icons ──
+const WAZE_ALERT_ICONS = {
+    ACCIDENT: { emoji: '🚨', color: '#dc2626', label: 'Accident' },
+    HAZARD: { emoji: '⚠️', color: '#f97316', label: 'Hazard' },
+    ROAD_CLOSED: { emoji: '🚧', color: '#991b1b', label: 'Road Closed' },
+    JAM: { emoji: '🚗', color: '#eab308', label: 'Traffic Jam' },
+    POLICE: { emoji: '🚔', color: '#3b82f6', label: 'Police' },
+    CONSTRUCTION: { emoji: '🏗️', color: '#a16207', label: 'Construction' },
+    default: { emoji: '⚪', color: '#6b7280', label: 'Alert' },
+};
+
+function getWazeAlertStyle(type) {
+    return WAZE_ALERT_ICONS[type?.toUpperCase()] || WAZE_ALERT_ICONS.default;
+}
 
 // ── POI Type Icons ──
 const POI_ICONS = {
@@ -244,6 +261,8 @@ function drawRoute(routeData) {
     if (routeLayer) map.removeLayer(routeLayer);
     routeMarkersLayer.clearLayers();
     altRoutesLayer.clearLayers();
+    wazeAlertsLayer.clearLayers();
+    wazeJamsLayer.clearLayers();
     currentPrimaryRoute = routeData;
 
     const polyline = routeData.polyline;
@@ -524,6 +543,9 @@ async function sendMessage() {
             if (data.alternative_routes && data.alternative_routes.length > 0) {
                 drawAlternativeRoutes(data.alternative_routes);
             }
+
+            // Auto-trigger traffic analysis
+            fetchTrafficData(data.route_data);
         }
 
         if (data.pois && data.pois.length > 0) {
@@ -597,4 +619,166 @@ function switchToAlternativeRoute(altIndex) {
         false,
         newPrimary
     );
+
+    // Re-analyze traffic for the new primary route
+    fetchTrafficData(newPrimary);
+}
+
+
+// ──────────────────────────────────────────────
+// WAZE TRAFFIC DATA
+// ──────────────────────────────────────────────
+
+async function fetchTrafficData(routeData) {
+    try {
+        const token = window.getAccessToken ? window.getAccessToken() : null;
+        if (!token) return;
+
+        // Show a traffic loading indicator in chat
+        const trafficMsg = document.createElement('div');
+        trafficMsg.className = 'message agent-message';
+        trafficMsg.id = 'traffic-loading-message';
+        const trafficContent = document.createElement('div');
+        trafficContent.className = 'message-content';
+        trafficContent.innerHTML = '🔍 Analyzing traffic conditions<span class="loading"></span>';
+        trafficMsg.appendChild(trafficContent);
+        chatMessages.appendChild(trafficMsg);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        const response = await fetch('http://localhost:8000/analyze-route', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ route_data: routeData })
+        });
+
+        // Remove loading message
+        const loadingEl = document.getElementById('traffic-loading-message');
+        if (loadingEl) loadingEl.remove();
+
+        if (!response.ok) {
+            console.error('Traffic analysis failed:', response.status);
+            return;
+        }
+
+        const data = await response.json();
+
+        // Render alerts and jams on the map
+        if (data.alerts && data.alerts.length > 0) {
+            renderWazeAlerts(data.alerts);
+        }
+        if (data.jams && data.jams.length > 0) {
+            renderWazeJams(data.jams);
+        }
+
+        // Show a summary message in chat
+        let summaryParts = [];
+        if (data.bottleneck_analysis) {
+            summaryParts.push(data.bottleneck_analysis);
+        }
+        if (data.alerts && data.alerts.length > 0) {
+            summaryParts.push(`🚨 **${data.alerts.length} traffic alert(s)** found on your route.`);
+        }
+        if (data.jams && data.jams.length > 0) {
+            summaryParts.push(`🚗 **${data.jams.length} traffic jam(s)** detected.`);
+        }
+        if (summaryParts.length === 0) {
+            summaryParts.push('✅ No significant traffic issues detected on your route!');
+        }
+        addMessage(summaryParts.join('\n\n'), false);
+
+    } catch (error) {
+        console.error('Traffic analysis error:', error);
+        const loadingEl = document.getElementById('traffic-loading-message');
+        if (loadingEl) loadingEl.remove();
+    }
+}
+
+
+function renderWazeAlerts(alerts) {
+    wazeAlertsLayer.clearLayers();
+    if (!alerts || alerts.length === 0) return;
+
+    alerts.forEach((alert) => {
+        if (!alert.latitude || !alert.longitude) return;
+
+        const style = getWazeAlertStyle(alert.type);
+
+        const icon = L.divIcon({
+            className: 'waze-alert-marker',
+            html: `<div class="waze-alert-pin" style="background: ${style.color};"><span class="waze-alert-emoji">${style.emoji}</span></div>`,
+            iconSize: [32, 38],
+            iconAnchor: [16, 38],
+            popupAnchor: [0, -38]
+        });
+
+        const timeStr = alert.publish_datetime_utc
+            ? new Date(alert.publish_datetime_utc).toLocaleTimeString()
+            : '';
+
+        L.marker([alert.latitude, alert.longitude], { icon })
+            .bindPopup(
+                `<div class="waze-popup">
+                    <div class="waze-popup-header" style="background: ${style.color};">
+                        ${style.emoji} ${style.label}
+                    </div>
+                    <div class="waze-popup-body">
+                        ${alert.description ? `<b>${alert.description}</b><br>` : ''}
+                        ${alert.street ? `📍 ${alert.street}` : ''}
+                        ${alert.city ? `, ${alert.city}` : ''}
+                        ${timeStr ? `<br>🕐 ${timeStr}` : ''}
+                    </div>
+                </div>`
+            )
+            .addTo(wazeAlertsLayer);
+    });
+}
+
+
+function renderWazeJams(jams) {
+    wazeJamsLayer.clearLayers();
+    if (!jams || jams.length === 0) return;
+
+    const JAM_COLORS = {
+        1: '#fbbf24',  // yellow — light
+        2: '#f59e0b',  // amber
+        3: '#f97316',  // orange
+        4: '#ef4444',  // red
+        5: '#dc2626',  // dark red — severe
+    };
+
+    jams.forEach((jam) => {
+        const color = JAM_COLORS[jam.level] || JAM_COLORS[3];
+
+        if (jam.line && jam.line.length >= 2) {
+            // Draw jam as a polyline
+            const jamLine = L.polyline(jam.line, {
+                color: color,
+                weight: 7,
+                opacity: 0.75,
+                lineCap: 'round',
+                lineJoin: 'round',
+            }).addTo(wazeJamsLayer);
+
+            const speedText = jam.speed_kmh ? `${jam.speed_kmh} km/h` : 'Slow';
+            const lengthText = jam.length ? `${(jam.length / 1000).toFixed(1)} km` : '';
+
+            jamLine.bindPopup(
+                `<div class="waze-popup">
+                    <div class="waze-popup-header" style="background: ${color};">
+                        🚗 Traffic Jam (Level ${jam.level}/5)
+                    </div>
+                    <div class="waze-popup-body">
+                        ${jam.street ? `📍 ${jam.street}<br>` : ''}
+                        🏎️ Speed: ${speedText}
+                        ${lengthText ? `<br>📏 Length: ${lengthText}` : ''}
+                    </div>
+                </div>`
+            );
+
+            jamLine.bindTooltip(`🚗 Jam Lvl ${jam.level} · ${speedText}`, { sticky: true, className: 'waze-jam-tooltip' });
+        }
+    });
 }

@@ -2175,3 +2175,71 @@ body {
     color: var(--color-dark);
 }
 
+/* ══════════════════════════════════
+   WAZE TRAFFIC MARKERS
+   ══════════════════════════════════ */
+
+.waze-alert-marker {
+    text-align: center;
+}
+
+.waze-alert-pin {
+    width: 30px;
+    height: 30px;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+    margin: 0 auto;
+    transition: transform 0.2s;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+.waze-alert-marker:hover .waze-alert-pin {
+    transform: rotate(-45deg) scale(1.2);
+}
+
+.waze-alert-emoji {
+    transform: rotate(45deg);
+    font-size: 13px;
+    line-height: 1;
+}
+
+.waze-popup {
+    min-width: 180px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.waze-popup-header {
+    padding: 6px 10px;
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+}
+
+.waze-popup-body {
+    padding: 8px 10px;
+    font-size: 13px;
+    color: var(--color-light);
+    line-height: 1.5;
+}
+
+.waze-jam-tooltip {
+    background: rgba(38, 37, 30, 0.96) !important;
+    color: var(--color-light) !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 6px 12px !important;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+}
+
+.waze-jam-tooltip::before {
+    border-top-color: rgba(38, 37, 30, 0.96) !important;
+}
+

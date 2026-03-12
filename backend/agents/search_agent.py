@@ -1,7 +1,7 @@
 """
 Search Agent — POI discovery with tool-calling.
 
-Uses Claude (via Kie API) to understand search queries and invoke
+Uses Gemini 3 Flash (via Kie API) to understand search queries and invoke
 the appropriate OSM Overpass tools. Falls back to direct tool results
 if the LLM summary call fails.
 """
@@ -21,10 +21,10 @@ def create_search_agent():
     """Create and return the search agent graph."""
     
     llm = ChatOpenAI(
-        model="claude-opus-4-5",
+        model="gemini-3-flash",
         api_key=KIE_API_KEY,
-        base_url=f"{KIE_BASE_URL}/claude-opus-4-5/v1",
-        temperature=0
+        base_url=f"{KIE_BASE_URL}/gemini-3-flash/v1",
+        temperature=0,
     )
     
     tools = [search_poi_along_route, search_poi_nearby]
@@ -127,15 +127,35 @@ def run_search_agent(query: str, route_data: dict = None, location: dict = None)
     
     agent = create_search_agent()
     
-    system_prompt = """You are a search assistant specializing in finding Points of Interest (POIs).
-    
-You have access to two tools:
-1. search_poi_along_route - Use when user has a route and wants POIs along it
-2. search_poi_nearby - Use when searching near a specific location
+    system_prompt = """You are a search assistant that finds Points of Interest (POIs) for a navigation app.
 
-Common POI types: fuel, charging_station, restaurant, cafe, atm, parking, hotel, hospital
+## YOUR TOOLS:
+1. **search_poi_nearby** — Search for POIs near a GPS coordinate. Use this when:
+   - User wants to find places near their current location
+   - No active route exists
+   - User says "near me", "nearby", "closest", "nearest", "pass mein"
 
-Analyze the user's query and use the appropriate tool. After getting results, provide a clear, concise summary of what was found."""
+2. **search_poi_along_route** — Search for POIs along an active navigation route. Use this when:
+   - There IS an active route AND user wants POIs along it (e.g., "gas stations on the way")
+   - User says "on the way", "along the route", "en route", "raste mein"
+
+## POI TYPE MAPPING (user query → poi_type parameter):
+- hospital, clinic, medical → "hospital"
+- petrol pump, gas station, fuel → "fuel"  
+- EV charger, charging → "charging_station"
+- restaurant, food, khana → "restaurant"
+- cafe, coffee → "cafe"
+- ATM, cash → "atm"
+- parking → "parking"
+- hotel, lodge, stay → "hotel"
+- pharmacy, medical store, dawai → "pharmacy"
+- supermarket, grocery → "supermarket"
+
+## RULES:
+- ALWAYS use the user's current location coordinates when available.
+- Default radius: 5000 meters. Increase to 10000 if few results.
+- After getting results, summarize them clearly with names and distances, sorted by distance (nearest first).
+- If no results found, suggest increasing radius or trying a different POI type."""
     
     context = ""
     if route_data:
