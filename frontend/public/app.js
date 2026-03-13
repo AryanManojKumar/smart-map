@@ -106,6 +106,9 @@ function getUserLocation() {
                     locationStatus.style.background = '#10b981';
                     setTimeout(() => { locationStatus.style.display = 'none'; }, 3000);
                 }
+                
+                // Check if start navigation button should be shown
+                showStartNavButton();
             },
             (error) => {
                 console.error('Geolocation error:', error);
@@ -163,7 +166,7 @@ function formatAgentMessageContent(raw) {
 }
 
 // ── Add Message to Chat ──
-function addMessage(content, isUser = false, routeData = null) {
+function addMessage(content, isUser = false, routeData = null, intent = null) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
 
@@ -228,6 +231,25 @@ function addMessage(content, isUser = false, routeData = null) {
 
             directionsPanel.appendChild(directionsList);
             messageDiv.appendChild(directionsPanel);
+        }
+        
+        // Add traffic analysis button ONLY for routing intent
+        if (intent === 'routing') {
+            const trafficButtonDiv = document.createElement('div');
+            trafficButtonDiv.className = 'traffic-button-container';
+            trafficButtonDiv.style.marginTop = '12px';
+            
+            const trafficButton = document.createElement('button');
+            trafficButton.className = 'traffic-analyze-btn';
+            trafficButton.innerHTML = '🚦 Analyze Traffic with Waze';
+            trafficButton.onclick = () => {
+                trafficButton.disabled = true;
+                trafficButton.innerHTML = '🔍 Analyzing...';
+                fetchTrafficData(routeData);
+            };
+            
+            trafficButtonDiv.appendChild(trafficButton);
+            messageDiv.appendChild(trafficButtonDiv);
         }
     }
 
@@ -362,8 +384,26 @@ function selectCandidate(id, name) {
 // ──────────────────────────────────────────────
 
 function showStartNavButton() {
-    if (startNavButton && !navigationActive) {
-        startNavButton.style.display = 'block';
+    if (startNavButton && !navigationActive && currentPrimaryRoute) {
+        // Only show button if user is near the route start point
+        if (!userLocation) {
+            startNavButton.style.display = 'none';
+            return;
+        }
+        
+        const routeStart = {
+            lat: currentPrimaryRoute.start_point.lat,
+            lng: currentPrimaryRoute.start_point.lng
+        };
+        
+        const distanceToStart = haversineMeters(userLocation, routeStart);
+        const threshold = 100; // 100 meters
+        
+        if (distanceToStart <= threshold) {
+            startNavButton.style.display = 'block';
+        } else {
+            startNavButton.style.display = 'none';
+        }
     }
 }
 
@@ -534,7 +574,7 @@ async function sendMessage() {
         currentSessionId = data.session_id;
         removeLoadingMessage();
 
-        addMessage(data.message, false, data.route_data);
+        addMessage(data.message, false, data.route_data, data.intent);
 
         if (data.route_data && data.route_data.polyline) {
             candidateLayer.clearLayers();
@@ -543,9 +583,6 @@ async function sendMessage() {
             if (data.alternative_routes && data.alternative_routes.length > 0) {
                 drawAlternativeRoutes(data.alternative_routes);
             }
-
-            // Auto-trigger traffic analysis
-            fetchTrafficData(data.route_data);
         }
 
         if (data.pois && data.pois.length > 0) {
@@ -617,11 +654,9 @@ function switchToAlternativeRoute(altIndex) {
     addMessage(
         `Switched to Route ${altIndex + 2}: ${newPrimary.distance_km} km, ~${Math.round(newPrimary.time_minutes)} min.`,
         false,
-        newPrimary
+        newPrimary,
+        'routing'  // Pass routing intent so traffic button appears
     );
-
-    // Re-analyze traffic for the new primary route
-    fetchTrafficData(newPrimary);
 }
 
 

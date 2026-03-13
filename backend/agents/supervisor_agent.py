@@ -428,6 +428,17 @@ def routing_node(state: SupervisorState):
     location_a = routing_params.get("location_a", "")
     location_b = routing_params.get("location_b", "")
     
+    # Only use GPS as fallback if location_a is truly empty AND not coming from disambiguation
+    # Check if we have pending_candidates context that might have preserved location_a
+    pending_candidates = state.get("pending_candidates")
+    if pending_candidates and pending_candidates.get("context"):
+        context = pending_candidates["context"]
+        # If location_a was preserved in context, use it
+        if context.get("location_a") and not location_a:
+            location_a = context["location_a"]
+            AgentLogger.info(f"Restored location_a from disambiguation context: {location_a}")
+    
+    # Only default to GPS if location_a is still empty
     if not location_a and user_location:
         location_a = f"{user_location['lat']},{user_location['lng']}"
         AgentLogger.info("Using user GPS as start location")
@@ -811,8 +822,9 @@ For "question": Answer their question, then ask which location they'd like."""
                 else:
                     location_b = selected_coords
                 
-                # Resolve the other location if needed
-                if not is_coordinates(location_a) and user_location:
+                # Only use GPS if location_a is EMPTY (not just non-coordinates)
+                # If location_a has a value (place name), keep it - routing_node will geocode it
+                if not location_a and user_location:
                     location_a = f"{user_location['lat']},{user_location['lng']}"
                 
                 routing_prefs = state.get("routing_preferences") or {}
@@ -903,7 +915,8 @@ For "question": Answer their question, then ask which location they'd like."""
                         else:
                             location_b = selected_coords
                         
-                        if not is_coordinates(location_a) and user_location:
+                        # Only use GPS if location_a is EMPTY (not just non-coordinates)
+                        if not location_a and user_location:
                             location_a = f"{user_location['lat']},{user_location['lng']}"
                         
                         try:

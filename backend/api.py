@@ -62,6 +62,7 @@ class ChatResponse(BaseModel):
     pois: Optional[list] = None
     location_candidates: Optional[list] = None
     alternative_routes: Optional[list] = None
+    intent: Optional[str] = None
 
 
 class AnalyzeRouteRequest(BaseModel):
@@ -105,7 +106,8 @@ async def chat(
             route_data=result.get("route_data"),
             pois=result.get("search_results"),
             location_candidates=result.get("location_candidates"),
-            alternative_routes=result.get("alternative_routes")
+            alternative_routes=result.get("alternative_routes"),
+            intent=result.get("intent")
         )
     except Exception as e:
         print(f"Error: {e}")

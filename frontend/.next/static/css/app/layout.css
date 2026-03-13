@@ -1749,6 +1749,47 @@ body {
 }
 
 
+/* ══════════════════════════════════
+   TRAFFIC ANALYSIS BUTTON
+   ══════════════════════════════════ */
+
+.traffic-button-container {
+    display: flex;
+    justify-content: center;
+}
+
+.traffic-analyze-btn {
+    padding: 10px 20px;
+    background: rgba(247, 247, 244, 0.06);
+    color: var(--color-light);
+    border: 1px solid rgba(247, 247, 244, 0.12);
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.traffic-analyze-btn:hover:not(:disabled) {
+    background: rgba(247, 247, 244, 0.1);
+    border-color: rgba(247, 247, 244, 0.2);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.traffic-analyze-btn:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+.traffic-analyze-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+
 /* ── Leaflet Popup Override ── */
 .leaflet-popup-content-wrapper {
     border-radius: 10px;
