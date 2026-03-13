@@ -1048,7 +1048,7 @@ def create_supervisor_agent(checkpointer=None):
 # Public API
 # ──────────────────────────────────────────────
 
-def run_supervisor(user_message, session_id, checkpointer=None, location=None, user_id=None):
+def run_supervisor(user_message, session_id, checkpointer=None, location=None, user_id=None, knowledge_context=None):
     """Run the supervisor agent. State persisted via checkpointer + thread_id."""
     
     AgentLogger._print_box("🚀 NEW REQUEST", AgentLogger.Colors.HEADER)
@@ -1056,12 +1056,19 @@ def run_supervisor(user_message, session_id, checkpointer=None, location=None, u
     AgentLogger.info(f"Message: \"{user_message}\"")
     if location:
         AgentLogger.info(f"GPS: ({location.get('lat')}, {location.get('lng')})")
+    if knowledge_context:
+        AgentLogger.info(f"🧠 Knowledge context: {len(knowledge_context)} chars injected")
     
     agent = create_supervisor_agent(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": session_id}}
     
+    # If knowledge context exists, prepend it to the user message as system context
+    enriched_message = user_message
+    if knowledge_context:
+        enriched_message = f"[SYSTEM CONTEXT — User Knowledge Base]\n{knowledge_context}\n[END SYSTEM CONTEXT]\n\nUser message: {user_message}"
+    
     input_state = {
-        "messages": [HumanMessage(content=user_message)],
+        "messages": [HumanMessage(content=enriched_message)],
         "location": location or {},
     }
     

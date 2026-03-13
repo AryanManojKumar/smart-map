@@ -17,10 +17,81 @@ export default function HomePage() {
       <Script src="/auth-client.js" strategy="afterInteractive" />
       <Script src="/app.js" strategy="afterInteractive" />
 
+      {/* Mobile sidebar overlay */}
+      <div id="mobileSidebarOverlay" className="mobile-sidebar-overlay" />
+
       <div className="container">
+        {/* Sidebar with Tabs */}
+        <div className="conversation-sidebar" id="conversationSidebar">
+          {/* Tab Switcher */}
+          <div className="sidebar-tabs">
+            <button
+              id="tabChats"
+              className="sidebar-tab active"
+              data-tab="chats"
+            >
+              💬 Chats
+            </button>
+            <button
+              id="tabKnowledge"
+              className="sidebar-tab"
+              data-tab="knowledge"
+            >
+              🧠 Memory
+            </button>
+          </div>
+
+          {/* Chats Tab */}
+          <div className="sidebar-tab-content active" id="chatsTab">
+            <div className="sidebar-header">
+              <h3>Conversations</h3>
+              <button
+                id="newChatButton"
+                className="new-chat-btn"
+                title="New Chat"
+              >
+                + New Chat
+              </button>
+            </div>
+            <div className="conversation-list" id="conversationList">
+              {/* Conversations populated by JS */}
+            </div>
+          </div>
+
+          {/* Knowledge Tab */}
+          <div className="sidebar-tab-content" id="knowledgeTab">
+            <div className="sidebar-header">
+              <h3>Your Memory</h3>
+              <button
+                id="refreshKnowledge"
+                className="new-chat-btn"
+                title="Refresh"
+              >
+                ↻ Refresh
+              </button>
+            </div>
+            <div className="knowledge-container" id="knowledgeContainer">
+              <div className="knowledge-empty">
+                <div className="knowledge-empty-icon">🧠</div>
+                <p>No memories yet.</p>
+                <p className="knowledge-empty-hint">
+                  I&apos;ll learn your preferences, favorite places, and frequent routes as you chat with me.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Chat Panel */}
         <div className="chat-panel">
           <div className="chat-header">
+            <button
+              id="sidebarToggle"
+              className="sidebar-toggle-btn"
+              title="Toggle Conversations"
+            >
+              ☰
+            </button>
             <h2>Nav AI Assistant</h2>
             <button
               id="authButton"
@@ -105,8 +176,16 @@ export default function HomePage() {
             </div>
           </div>
         </div>
+
+        {/* Mobile panel toggle button */}
+        <button
+          id="mobilePanelToggle"
+          className="mobile-panel-toggle"
+          title="Toggle View"
+        >
+          🗺️
+        </button>
       </div>
     </>
   );
 }
-
