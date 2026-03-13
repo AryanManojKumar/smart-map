@@ -4,6 +4,10 @@ FastAPI backend for Nav AI Assistant.
 Provides the /chat endpoint that routes through the stateful supervisor agent.
 Agent state (messages, routes, disambiguation) is persisted via PostgreSQL
 checkpointing. Redis is used only for user↔session auth mapping.
+
+Conversation management: conversations are indexed in the `conversations` table
+and expire after 24 hours. Knowledge is extracted before expiry and stored
+permanently in the `user_knowledge` table.
 """
 
 import sys
@@ -22,17 +26,34 @@ import json
 from backend.agents.supervisor_agent import run_supervisor, call_gemini_api
 from backend.auth.auth0 import get_current_user
 from backend.services.session_manager import SessionManager
+from backend.services.conversation_service import (
+    upsert_conversation,
+    get_user_conversations,
+    get_conversation,
+    delete_conversation,
+    rename_conversation,
+)
+from backend.services.knowledge_service import (
+    get_user_knowledge,
+    build_knowledge_context,
+    run_summarization,
+)
+from backend.services.expiry_job import start_expiry_scheduler, stop_expiry_scheduler
 from backend.persistence.checkpointer import get_checkpointer, shutdown_pool
+from backend.database.db import init_db, SessionLocal
 from backend.tools.waze_tool import get_waze_alerts_and_jams
 
 app = FastAPI(
     title="Nav AI Assistant API",
-    version="2.0.0",
-    description="AI-powered navigation assistant with stateful conversation support"
+    version="3.0.0",
+    description="AI-powered navigation assistant with stateful conversation support and user knowledge base"
 )
 
 # Initialize PostgreSQL checkpointer (creates tables on first run)
 checkpointer = get_checkpointer()
+
+# Create conversation & knowledge tables
+init_db()
 
 # Redis for user↔session auth mapping only
 session_manager = SessionManager()
@@ -69,6 +90,20 @@ class AnalyzeRouteRequest(BaseModel):
     route_data: dict
 
 
+class RenameConversationRequest(BaseModel):
+    title: str
+
+
+# ── Helper: get a DB session ─────────────────
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # ── Endpoints ────────────────────────────────
 
 @app.post("/chat", response_model=ChatResponse)
@@ -91,13 +126,24 @@ async def chat(
         # Map session to user (auth concern — stays in Redis)
         session_manager.save_user_mapping(session_id, user_id)
         
+        # Upsert conversation record in the conversations table
+        db = SessionLocal()
+        try:
+            upsert_conversation(db, session_id, user_id, request.message)
+            
+            # Build knowledge context from user's knowledge base
+            knowledge_context = build_knowledge_context(db, user_id)
+        finally:
+            db.close()
+        
         # Run stateful supervisor — checkpointer handles all state
         result = run_supervisor(
             user_message=request.message,
             session_id=session_id,
             checkpointer=checkpointer,
             location=request.user_location,
-            user_id=user_id
+            user_id=user_id,
+            knowledge_context=knowledge_context if knowledge_context else None,
         )
         
         return ChatResponse(
@@ -113,6 +159,224 @@ async def chat(
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ── Conversation Management Endpoints ────────
+
+@app.get("/conversations")
+async def list_conversations(
+    current_user: dict = Depends(get_current_user)
+):
+    """List all conversations for the authenticated user."""
+    db = SessionLocal()
+    try:
+        user_id = current_user["user_id"]
+        conversations = get_user_conversations(db, user_id)
+        return {
+            "conversations": [conv.to_dict() for conv in conversations]
+        }
+    finally:
+        db.close()
+
+
+@app.get("/conversations/{session_id}")
+async def load_conversation(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Load a specific conversation with messages from the checkpointer.
+    """
+    db = SessionLocal()
+    try:
+        user_id = current_user["user_id"]
+        conv = get_conversation(db, session_id, user_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        # Get messages from checkpointer
+        try:
+            config = {"configurable": {"thread_id": session_id}}
+            state = checkpointer.get(config)
+            
+            if state is None:
+                return {
+                    **conv.to_dict(),
+                    "messages": [],
+                    "route_data": None,
+                }
+            
+            checkpoint_data = state.checkpoint
+            channel_values = checkpoint_data.get("channel_values", {})
+            messages = channel_values.get("messages", [])
+            route_data = channel_values.get("route_data")
+            alternative_routes = channel_values.get("alternative_routes")
+            
+            formatted_messages = []
+            for msg in messages:
+                # Skip system context messages injected by knowledge system
+                content = msg.content
+                if content.startswith("[SYSTEM CONTEXT"):
+                    # Extract only the user message part
+                    marker = "User message: "
+                    idx = content.find(marker)
+                    if idx >= 0:
+                        content = content[idx + len(marker):]
+                    else:
+                        continue
+                
+                formatted_messages.append({
+                    "role": "user" if hasattr(msg, 'type') and msg.type == "human" else "assistant",
+                    "content": content,
+                })
+            
+            return {
+                **conv.to_dict(),
+                "messages": formatted_messages,
+                "route_data": route_data,
+                "alternative_routes": alternative_routes,
+            }
+        except Exception as e:
+            print(f"Error loading conversation state: {e}")
+            return {
+                **conv.to_dict(),
+                "messages": [],
+                "route_data": None,
+            }
+    finally:
+        db.close()
+
+
+@app.delete("/conversations/{session_id}")
+async def remove_conversation(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a conversation."""
+    db = SessionLocal()
+    try:
+        user_id = current_user["user_id"]
+        deleted = delete_conversation(db, session_id, user_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {"deleted": True, "session_id": session_id}
+    finally:
+        db.close()
+
+
+@app.patch("/conversations/{session_id}")
+async def update_conversation(
+    session_id: str,
+    request: RenameConversationRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Rename a conversation."""
+    db = SessionLocal()
+    try:
+        user_id = current_user["user_id"]
+        conv = rename_conversation(db, session_id, user_id, request.title)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conv.to_dict()
+    finally:
+        db.close()
+
+
+# ── Knowledge Endpoints ──────────────────────
+
+@app.get("/knowledge")
+async def get_knowledge(
+    current_user: dict = Depends(get_current_user)
+):
+    """Return the user's knowledge base."""
+    db = SessionLocal()
+    try:
+        user_id = current_user["user_id"]
+        items = get_user_knowledge(db, user_id)
+        return {
+            "knowledge": [item.to_dict() for item in items]
+        }
+    finally:
+        db.close()
+
+
+@app.post("/conversations/{session_id}/summarize")
+async def summarize_conversation(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Trigger knowledge extraction for a finished conversation.
+    Runs in a background thread so the response returns immediately.
+    """
+    import threading
+
+    user_id = current_user["user_id"]
+
+    def _bg_summarize():
+        db = SessionLocal()
+        try:
+            run_summarization(db, session_id, user_id, checkpointer)
+        except Exception as e:
+            print(f"Background summarization error: {e}")
+        finally:
+            db.close()
+
+    thread = threading.Thread(target=_bg_summarize, daemon=True)
+    thread.start()
+
+    return {"status": "summarizing", "session_id": session_id}
+
+
+# ── Session History (legacy) ─────────────────
+
+@app.get("/session/{session_id}/history")
+async def get_session_history(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get conversation history for a session.
+    
+    Retrieves state from the checkpointer (not Redis).
+    """
+    # Verify session belongs to user
+    stored_user_id = session_manager.get_user_id(session_id)
+    if stored_user_id != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get state from checkpointer
+    try:
+        config = {"configurable": {"thread_id": session_id}}
+        state = checkpointer.get(config)
+        
+        if state is None:
+            return {"session_id": session_id, "messages": [], "route_data": None}
+        
+        # Extract messages from checkpoint state
+        checkpoint_data = state.checkpoint
+        channel_values = checkpoint_data.get("channel_values", {})
+        messages = channel_values.get("messages", [])
+        route_data = channel_values.get("route_data")
+        
+        # Format messages for API response
+        formatted_messages = []
+        for msg in messages:
+            formatted_messages.append({
+                "role": "user" if hasattr(msg, 'type') and msg.type == "human" else "assistant",
+                "content": msg.content
+            })
+        
+        return {
+            "session_id": session_id,
+            "messages": formatted_messages,
+            "route_data": route_data
+        }
+    except Exception as e:
+        print(f"Error getting history: {e}")
+        return {"session_id": session_id, "messages": [], "route_data": None}
+
+
+# ── Route Analysis ───────────────────────────
 
 @app.post("/analyze-route")
 async def analyze_route(
@@ -245,52 +509,7 @@ Return at most 5 bottlenecks. Return ONLY valid JSON, no markdown."""
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/session/{session_id}/history")
-async def get_session_history(
-    session_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Get conversation history for a session.
-    
-    Retrieves state from the checkpointer (not Redis).
-    """
-    # Verify session belongs to user
-    stored_user_id = session_manager.get_user_id(session_id)
-    if stored_user_id != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    # Get state from checkpointer
-    try:
-        config = {"configurable": {"thread_id": session_id}}
-        state = checkpointer.get(config)
-        
-        if state is None:
-            return {"session_id": session_id, "messages": [], "route_data": None}
-        
-        # Extract messages from checkpoint state
-        checkpoint_data = state.checkpoint
-        channel_values = checkpoint_data.get("channel_values", {})
-        messages = channel_values.get("messages", [])
-        route_data = channel_values.get("route_data")
-        
-        # Format messages for API response
-        formatted_messages = []
-        for msg in messages:
-            formatted_messages.append({
-                "role": "user" if hasattr(msg, 'type') and msg.type == "human" else "assistant",
-                "content": msg.content
-            })
-        
-        return {
-            "session_id": session_id,
-            "messages": formatted_messages,
-            "route_data": route_data
-        }
-    except Exception as e:
-        print(f"Error getting history: {e}")
-        return {"session_id": session_id, "messages": [], "route_data": None}
-
+# ── Health & Info ────────────────────────────
 
 @app.get("/health")
 async def health():
@@ -320,23 +539,41 @@ async def health():
 async def root():
     return {
         "message": "Nav AI Assistant API",
-        "version": "2.0.0",
-        "features": ["stateful-conversations", "route-planning", "poi-search", "location-disambiguation"]
+        "version": "3.0.0",
+        "features": [
+            "stateful-conversations",
+            "route-planning",
+            "poi-search",
+            "location-disambiguation",
+            "conversation-management",
+            "user-knowledge-base",
+        ]
     }
+
+
+# ── Lifecycle ────────────────────────────────
+
+@app.on_event("startup")
+def on_startup():
+    """Start background scheduler on app startup."""
+    start_expiry_scheduler()
 
 
 @app.on_event("shutdown")
 def on_shutdown():
-    """Clean up database connections on shutdown."""
+    """Clean up database connections and scheduler on shutdown."""
+    stop_expiry_scheduler()
     shutdown_pool()
 
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n🚀 Starting Nav AI Assistant API (v2.0 - Stateful)...")
+    print("\n🚀 Starting Nav AI Assistant API (v3.0 - Knowledge)...")
     print("📍 Server running at http://localhost:8000")
     print("🔐 Auth0 authentication enabled")
     print("🗄️  PostgreSQL checkpointer active (stateful conversations)")
     print("💾 Redis for auth session mapping")
+    print("🧠 User knowledge base active")
+    print("⏰ Conversation expiry scheduler running (24hr)")
     print("💬 Ready to help with navigation!\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -817,3 +817,580 @@ function renderWazeJams(jams) {
         }
     });
 }
+
+
+// ──────────────────────────────────────────────
+// CONVERSATION MANAGEMENT
+// ──────────────────────────────────────────────
+
+const conversationSidebar = document.getElementById('conversationSidebar');
+const conversationList = document.getElementById('conversationList');
+const newChatButton = document.getElementById('newChatButton');
+const sidebarToggle = document.getElementById('sidebarToggle');
+
+// Restore session from localStorage
+(function restoreSession() {
+    const saved = localStorage.getItem('navai_current_session');
+    if (saved) {
+        currentSessionId = saved;
+    }
+})();
+
+// Save session to localStorage whenever it changes
+function persistSession() {
+    if (currentSessionId) {
+        localStorage.setItem('navai_current_session', currentSessionId);
+    } else {
+        localStorage.removeItem('navai_current_session');
+    }
+}
+
+// Time formatting for sidebar items
+function timeAgo(dateStr) {
+    if (!dateStr) return '';
+    const now = new Date();
+    const then = new Date(dateStr);
+    const diffMs = now - then;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'Just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h ago`;
+    return then.toLocaleDateString();
+}
+
+// Load conversations list from backend
+async function loadConversations() {
+    try {
+        const token = window.getAccessToken ? window.getAccessToken() : null;
+        if (!token) return;
+
+        const response = await fetch('http://localhost:8000/conversations', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+        renderConversationList(data.conversations || []);
+    } catch (error) {
+        console.error('Failed to load conversations:', error);
+    }
+}
+
+// Render the conversation list in the sidebar
+function renderConversationList(conversations) {
+    if (!conversationList) return;
+
+    if (conversations.length === 0) {
+        conversationList.innerHTML = '<div class="conversation-empty">No conversations yet.<br>Start chatting!</div>';
+        return;
+    }
+
+    conversationList.innerHTML = '';
+
+    conversations.forEach(conv => {
+        const item = document.createElement('div');
+        item.className = 'conversation-item' + (conv.session_id === currentSessionId ? ' active' : '');
+
+        const title = document.createElement('div');
+        title.className = 'conversation-item-title';
+        title.textContent = conv.title || 'New Chat';
+
+        const meta = document.createElement('div');
+        meta.className = 'conversation-item-meta';
+        meta.textContent = timeAgo(conv.updated_at);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'conversation-item-delete';
+        deleteBtn.innerHTML = '✕';
+        deleteBtn.title = 'Delete';
+        deleteBtn.onclick = (e) => {
+            e.stopPropagation();
+            deleteConversation(conv.session_id);
+        };
+
+        item.appendChild(title);
+        item.appendChild(meta);
+        item.appendChild(deleteBtn);
+
+        item.onclick = () => switchConversation(conv.session_id);
+
+        conversationList.appendChild(item);
+    });
+}
+
+// Switch to a different conversation
+async function switchConversation(sessionId) {
+    if (sessionId === currentSessionId) return;
+
+    try {
+        const token = window.getAccessToken ? window.getAccessToken() : null;
+        if (!token) return;
+
+        const response = await fetch(`http://localhost:8000/conversations/${sessionId}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (!response.ok) {
+            console.error('Failed to load conversation:', response.status);
+            return;
+        }
+
+        const data = await response.json();
+
+        // Update current session
+        currentSessionId = sessionId;
+        persistSession();
+
+        // Clear map layers
+        if (routeLayer) map.removeLayer(routeLayer);
+        routeMarkersLayer.clearLayers();
+        altRoutesLayer.clearLayers();
+        wazeAlertsLayer.clearLayers();
+        wazeJamsLayer.clearLayers();
+        poiLayer.clearLayers();
+        candidateLayer.clearLayers();
+        currentPrimaryRoute = null;
+        currentAlternatives = [];
+
+        // Populate chat messages
+        if (chatMessages) {
+            chatMessages.innerHTML = '';
+        }
+
+        if (data.messages && data.messages.length > 0) {
+            data.messages.forEach(msg => {
+                addMessage(msg.content, msg.role === 'user', null, null);
+            });
+        } else {
+            addMessage('Welcome back! Where would you like to go?', false);
+        }
+
+        // Restore route on map
+        if (data.route_data && data.route_data.polyline) {
+            drawRoute(data.route_data);
+            if (data.alternative_routes && data.alternative_routes.length > 0) {
+                drawAlternativeRoutes(data.alternative_routes);
+            }
+        }
+
+        // Update active state in sidebar
+        loadConversations();
+
+    } catch (error) {
+        console.error('Error switching conversation:', error);
+    }
+}
+
+// Start a new chat
+function newChat() {
+    // Summarize the old conversation in the background before clearing
+    if (currentSessionId) {
+        const oldSessionId = currentSessionId;
+        const token = window.getAccessToken ? window.getAccessToken() : null;
+        if (token) {
+            fetch(`http://localhost:8000/conversations/${oldSessionId}/summarize`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).then(() => {
+                console.log('🧠 Summarization started for', oldSessionId.slice(0, 8));
+            }).catch(err => console.error('Summarize failed:', err));
+        }
+    }
+
+    currentSessionId = null;
+    persistSession();
+
+    // Clear map layers
+    if (routeLayer) map.removeLayer(routeLayer);
+    routeMarkersLayer.clearLayers();
+    altRoutesLayer.clearLayers();
+    wazeAlertsLayer.clearLayers();
+    wazeJamsLayer.clearLayers();
+    poiLayer.clearLayers();
+    candidateLayer.clearLayers();
+    currentPrimaryRoute = null;
+    currentAlternatives = [];
+    hideStartNavButton();
+
+    // Stop any active navigation
+    if (navigationActive) stopNavigation(true);
+
+    // Reset chat
+    if (chatMessages) {
+        chatMessages.innerHTML = `
+            <div class="message agent-message">
+                <div class="message-content">
+                    Welcome! Where would you like to go?
+                </div>
+            </div>
+        `;
+    }
+
+    // Update sidebar
+    loadConversations();
+}
+
+// Delete a conversation
+async function deleteConversation(sessionId) {
+    try {
+        const token = window.getAccessToken ? window.getAccessToken() : null;
+        if (!token) return;
+
+        const response = await fetch(`http://localhost:8000/conversations/${sessionId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (!response.ok) {
+            console.error('Failed to delete conversation:', response.status);
+            return;
+        }
+
+        // If we deleted the current conversation, start a new one
+        if (sessionId === currentSessionId) {
+            newChat();
+        } else {
+            loadConversations();
+        }
+
+    } catch (error) {
+        console.error('Error deleting conversation:', error);
+    }
+}
+
+// Toggle sidebar
+function toggleSidebar() {
+    if (conversationSidebar) {
+        conversationSidebar.classList.toggle('collapsed');
+    }
+}
+
+// Event listeners
+if (newChatButton) newChatButton.addEventListener('click', newChat);
+if (sidebarToggle) sidebarToggle.addEventListener('click', toggleSidebar);
+
+// Override the original sendMessage to also persist session and refresh sidebar
+const _originalSendMessage = sendMessage;
+sendMessage = async function () {
+    await _originalSendMessage();
+    persistSession();
+    // Refresh conversation list after sending a message (slight delay for DB write)
+    setTimeout(loadConversations, 500);
+};
+
+// Re-bind event listeners with the new sendMessage
+if (sendButton) {
+    sendButton.removeEventListener('click', _originalSendMessage);
+    sendButton.addEventListener('click', sendMessage);
+}
+if (chatInput) {
+    chatInput.removeEventListener('keypress', () => {});
+    chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+}
+
+// Load conversations when auth is ready (custom event from auth-client.js)
+window.addEventListener('navai-auth-ready', () => {
+    setTimeout(loadConversations, 300);
+    setTimeout(loadKnowledge, 500);
+});
+
+
+// ──────────────────────────────────────────────
+// SIDEBAR TABS
+// ──────────────────────────────────────────────
+
+const tabChats = document.getElementById('tabChats');
+const tabKnowledge = document.getElementById('tabKnowledge');
+const chatsTab = document.getElementById('chatsTab');
+const knowledgeTab = document.getElementById('knowledgeTab');
+const knowledgeContainer = document.getElementById('knowledgeContainer');
+const refreshKnowledge = document.getElementById('refreshKnowledge');
+
+function switchTab(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.sidebar-tab-content').forEach(c => c.classList.remove('active'));
+
+    if (tabName === 'chats') {
+        tabChats && tabChats.classList.add('active');
+        chatsTab && chatsTab.classList.add('active');
+    } else {
+        tabKnowledge && tabKnowledge.classList.add('active');
+        knowledgeTab && knowledgeTab.classList.add('active');
+        loadKnowledge();
+    }
+}
+
+if (tabChats) tabChats.addEventListener('click', () => switchTab('chats'));
+if (tabKnowledge) tabKnowledge.addEventListener('click', () => switchTab('knowledge'));
+if (refreshKnowledge) refreshKnowledge.addEventListener('click', loadKnowledge);
+
+
+const CATEGORY_ICONS = {
+    personality: '🎭',
+    travel: '🚗',
+    places: '📍',
+    preferences: '⚙️',
+    patterns: '🔄',
+    general: '📝',
+};
+
+const CATEGORY_LABELS = {
+    personality: 'Personality & Tone',
+    travel: 'Travel & Routes',
+    places: 'Places & Locations',
+    preferences: 'Preferences',
+    patterns: 'Patterns & Habits',
+    general: 'General',
+};
+
+async function loadKnowledge() {
+    try {
+        const token = window.getAccessToken ? window.getAccessToken() : null;
+        if (!token) return;
+
+        const response = await fetch('http://localhost:8000/knowledge', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+        renderKnowledge(data.knowledge || []);
+    } catch (error) {
+        console.error('Failed to load knowledge:', error);
+    }
+}
+
+function renderKnowledge(items) {
+    if (!knowledgeContainer) return;
+
+    if (items.length === 0) {
+        knowledgeContainer.innerHTML = `
+            <div class="knowledge-empty">
+                <div class="knowledge-empty-icon">🧠</div>
+                <p>No memories yet.</p>
+                <p class="knowledge-empty-hint">
+                    I'll learn your preferences, favorite places, and frequent routes as you chat with me.
+                </p>
+            </div>
+        `;
+        return;
+    }
+
+    // Group by display_category
+    const grouped = {};
+    items.forEach(item => {
+        const cat = item.display_category || 'general';
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push(item);
+    });
+
+    let html = '';
+    const catOrder = ['personality', 'travel', 'places', 'preferences', 'patterns', 'general'];
+
+    catOrder.forEach(cat => {
+        if (!grouped[cat]) return;
+
+        const icon = CATEGORY_ICONS[cat] || '📝';
+        const label = CATEGORY_LABELS[cat] || formatKey(cat);
+
+        html += `<div class="knowledge-group">`;
+        html += `<div class="knowledge-group-title">${icon} ${label}</div>`;
+
+        grouped[cat].forEach(item => {
+            const conf = Math.round((item.confidence || 0) * 100);
+            const confClass = conf >= 80 ? 'high' : conf >= 50 ? 'medium' : 'low';
+            const safetyBadge = item.safety_level === 'explicit'
+                ? '<span class="knowledge-safety explicit">explicit</span>'
+                : '<span class="knowledge-safety inferred">inferred</span>';
+            const typeLabel = formatKey(item.knowledge_type || '');
+            const detail = formatKnowledgeDetail(item.value);
+
+            html += `
+                <div class="knowledge-card">
+                    <div class="knowledge-card-header">
+                        <span class="knowledge-card-key">${formatKey(item.key)}</span>
+                        <span class="knowledge-confidence ${confClass}">${conf}%</span>
+                    </div>
+                    <div class="knowledge-card-type">${typeLabel} ${safetyBadge}</div>
+                    <div class="knowledge-card-detail">${detail}</div>
+                    <div class="knowledge-confidence-bar">
+                        <div class="knowledge-confidence-fill ${confClass}" style="width: ${conf}%"></div>
+                    </div>
+                    <div class="knowledge-card-meta">Seen ${item.occurrence_count || 1}×</div>
+                </div>
+            `;
+        });
+
+        html += `</div>`;
+    });
+
+    knowledgeContainer.innerHTML = html;
+}
+
+function formatKey(key) {
+    return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function formatKnowledgeDetail(value) {
+    if (!value || typeof value !== 'object') return String(value || '');
+
+    // Universal renderer — works with any dynamic entity type
+    const parts = [];
+
+    // Always show description first if present
+    if (value.description) {
+        parts.push(value.description);
+    }
+
+    // Render remaining fields
+    for (const [k, v] of Object.entries(value)) {
+        if (k === 'description') continue;
+        if (v === null || v === undefined || v === '') continue;
+
+        const label = formatKey(k);
+        if (typeof v === 'object') {
+            parts.push(`${label}: ${JSON.stringify(v)}`);
+        } else {
+            parts.push(`${label}: ${v}`);
+        }
+    }
+
+    return parts.join('<br>');
+}
+
+
+// ──────────────────────────────────────────────
+// MOBILE RESPONSIVE HANDLING
+// ──────────────────────────────────────────────
+
+const mobileSidebarOverlay = document.getElementById('mobileSidebarOverlay');
+const mobilePanelToggle = document.getElementById('mobilePanelToggle');
+
+let mobileViewState = 'map';
+
+function isMobileView() {
+    return window.innerWidth <= 768;
+}
+
+function toggleMobileSidebar(open) {
+    if (!conversationSidebar) return;
+    
+    if (open) {
+        conversationSidebar.classList.add('mobile-open');
+        conversationSidebar.classList.remove('collapsed');
+        if (mobileSidebarOverlay) mobileSidebarOverlay.classList.add('active');
+    } else {
+        conversationSidebar.classList.remove('mobile-open');
+        if (mobileSidebarOverlay) mobileSidebarOverlay.classList.remove('active');
+    }
+}
+
+function toggleMobilePanel() {
+    const chatPanel = document.querySelector('.chat-panel');
+    const mapPanel = document.querySelector('.map-panel');
+    
+    if (!chatPanel || !mapPanel || !mobilePanelToggle) return;
+    
+    if (mobileViewState === 'map') {
+        chatPanel.style.height = '70vh';
+        mapPanel.style.height = '30vh';
+        chatPanel.style.order = '1';
+        mapPanel.style.order = '2';
+        mobilePanelToggle.textContent = '🗺️';
+        mobileViewState = 'chat';
+    } else {
+        chatPanel.style.height = '50vh';
+        mapPanel.style.height = '50vh';
+        chatPanel.style.order = '2';
+        mapPanel.style.order = '1';
+        mobilePanelToggle.textContent = '💬';
+        mobileViewState = 'map';
+    }
+    
+    setTimeout(() => {
+        if (map) map.invalidateSize();
+    }, 300);
+}
+
+if (mobilePanelToggle) {
+    mobilePanelToggle.addEventListener('click', toggleMobilePanel);
+}
+
+if (mobileSidebarOverlay) {
+    mobileSidebarOverlay.addEventListener('click', () => toggleMobileSidebar(false));
+}
+
+if (sidebarToggle) {
+    sidebarToggle.removeEventListener('click', toggleSidebar);
+    sidebarToggle.addEventListener('click', () => {
+        if (isMobileView()) {
+            const isOpen = conversationSidebar && conversationSidebar.classList.contains('mobile-open');
+            toggleMobileSidebar(!isOpen);
+        } else {
+            toggleSidebar();
+        }
+    });
+}
+
+function handleResize() {
+    const chatPanel = document.querySelector('.chat-panel');
+    const mapPanel = document.querySelector('.map-panel');
+    
+    if (!isMobileView()) {
+        if (chatPanel) {
+            chatPanel.style.height = '';
+            chatPanel.style.order = '';
+        }
+        if (mapPanel) {
+            mapPanel.style.height = '';
+            mapPanel.style.order = '';
+        }
+        toggleMobileSidebar(false);
+        mobileViewState = 'map';
+    }
+    
+    setTimeout(() => {
+        if (map) map.invalidateSize();
+    }, 100);
+}
+
+window.addEventListener('resize', handleResize);
+
+document.addEventListener('DOMContentLoaded', () => {
+    handleResize();
+});
+
+function focusOnChat() {
+    if (isMobileView() && mobileViewState === 'map') {
+        toggleMobilePanel();
+    }
+}
+
+const _originalAddMessage = addMessage;
+addMessage = function(content, isUser = false, routeData = null, intent = null) {
+    _originalAddMessage(content, isUser, routeData, intent);
+    
+    if (!isUser && isMobileView() && mobileViewState === 'map') {
+        const chatPanel = document.querySelector('.chat-panel');
+        if (chatPanel) {
+            chatPanel.style.height = '60vh';
+            const mapPanel = document.querySelector('.map-panel');
+            if (mapPanel) mapPanel.style.height = '40vh';
+        }
+    }
+};
+
+const _originalDrawRoute = drawRoute;
+drawRoute = function(routeData) {
+    _originalDrawRoute(routeData);
+    
+    if (isMobileView()) {
+        setTimeout(() => {
+            if (map) map.invalidateSize();
+        }, 100);
+    }
+};

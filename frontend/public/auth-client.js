@@ -135,6 +135,9 @@ function unlockChat() {
             </div>
         </div>
     `;
+
+  // Notify app.js that auth is ready so conversation sidebar can load
+  window.dispatchEvent(new CustomEvent('navai-auth-ready'));
 }
 
 async function login() {
